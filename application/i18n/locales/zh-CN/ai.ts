@@ -301,6 +301,18 @@ export const zhCNAiMessages: Messages = {
   'ai.mimo.check': '检查',
   'ai.mimo.resetPath': '重置',
 
+  // AI Pi 编程 Agent
+  'ai.pi.title': 'Pi',
+  'ai.pi.description': '使用 Pi 编程 Agent CLI。请在 Pi 中配置 provider 和凭据，检测到后即可作为外部编程 Agent 使用。',
+  'ai.pi.detecting': '检测中...',
+  'ai.pi.detected': '已检测到',
+  'ai.pi.notFound': '未找到',
+  'ai.pi.path': '路径：',
+  'ai.pi.notFoundHint': '在 PATH 中未找到 pi。请安装 Pi 或在下方指定可执行文件路径。',
+  'ai.pi.customPathPlaceholder': '例如 /usr/local/bin/pi',
+  'ai.pi.check': '检查',
+  'ai.pi.resetPath': '重置',
+
   // AI Grok Build（应用内托管 Agent，与 External MCP「添加到 Grok」不同）
   'ai.grok.title': 'Grok Build',
   'ai.grok.description': 'xAI 的 Grok Build 编程 Agent CLI。安装 Grok CLI，使用 `grok login` 登录或设置 XAI_API_KEY 后，即可作为外部 Agent 选择。',

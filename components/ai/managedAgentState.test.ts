@@ -146,29 +146,29 @@ test('buildManagedAgentState preserves Grok runtime across path refreshes', () =
   assert.equal(state.agents[0].sdkBackend, 'grok');
 });
 
-test('getInitialManagedAgentPaths ignores auto-detected command paths', () => {
+test('getInitialManagedAgentPaths exposes only the Pi path in the product surface', () => {
   const state = buildManagedAgentState(
     [],
     'catty',
-    'codex',
-    { path: '/opt/homebrew/bin/codex', version: '1.0.0', available: true },
+    'pi',
+    { path: '/opt/homebrew/bin/pi', version: '1.0.0', available: true },
     'auto',
   );
 
   assert.equal(state.agents[0].commandSource, 'auto');
-  assert.equal(getInitialManagedAgentPaths(state.agents).codex, '');
+  assert.equal(getInitialManagedAgentPaths(state.agents).pi, '');
 });
 
-test('getInitialManagedAgentPaths keeps manual and legacy command paths', () => {
+test('getInitialManagedAgentPaths keeps manual Pi paths and ignores legacy entries', () => {
   const manualState = buildManagedAgentState(
     [],
     'catty',
-    'codex',
-    { path: '/opt/homebrew/bin/codex', version: '1.0.0', available: true },
+    'pi',
+    { path: '/opt/homebrew/bin/pi', version: '1.0.0', available: true },
     'manual',
   );
 
-  assert.equal(getInitialManagedAgentPaths(manualState.agents).codex, '/opt/homebrew/bin/codex');
+  assert.equal(getInitialManagedAgentPaths(manualState.agents).pi, '/opt/homebrew/bin/pi');
   assert.equal(getInitialManagedAgentPaths([{
     id: 'discovered_codex',
     name: 'Codex CLI',
@@ -176,7 +176,7 @@ test('getInitialManagedAgentPaths keeps manual and legacy command paths', () => 
     enabled: true,
     available: true,
     sdkBackend: 'codex',
-  }]).codex, '/legacy/bin/codex');
+  }]).pi, '');
 });
 
 test('buildManagedAgentState stores SDK backend key for discovered Cursor', () => {

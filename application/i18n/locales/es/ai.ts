@@ -292,6 +292,18 @@ export const esAiMessages: Messages = {
   'ai.mimo.check': 'Verificar',
   'ai.mimo.resetPath': 'Restablecer',
 
+  // AI Pi
+  'ai.pi.title': 'Pi',
+  'ai.pi.description': 'Usa la CLI del agente de programación Pi. Configura proveedores y credenciales en Pi y luego selecciónalo como agente externo.',
+  'ai.pi.detecting': 'Detectando...',
+  'ai.pi.detected': 'Detectado',
+  'ai.pi.notFound': 'No encontrado',
+  'ai.pi.path': 'Ruta:',
+  'ai.pi.notFoundHint': 'No se pudo encontrar pi en el PATH. Instala Pi o especifica la ruta del ejecutable a continuación.',
+  'ai.pi.customPathPlaceholder': 'p. ej. /usr/local/bin/pi',
+  'ai.pi.check': 'Verificar',
+  'ai.pi.resetPath': 'Restablecer',
+
   // AI Grok Build (in-app managed agent — distinct from External MCP client install)
   'ai.grok.title': 'Grok Build',
   'ai.grok.description': "La CLI de agente de codificación Grok Build de xAI. Instala la CLI de Grok, inicia sesión con `grok login` o define XAI_API_KEY, y luego selecciónala como agente externo.",

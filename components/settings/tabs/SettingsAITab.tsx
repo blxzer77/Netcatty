@@ -4,7 +4,6 @@
  * Sub-components live in ./ai/ directory:
  *   - ProviderCard, ProviderConfigForm, AddProviderDropdown
  *   - ModelSelector
- *   - CodexConnectionCard, ClaudeCodeCard, CodebuddyCard
  *   - SafetySettings
  */
 import { AlertTriangle, Bot, FolderOpen, RefreshCcw } from "lucide-react";
@@ -13,7 +12,6 @@ import type {
   AIPermissionMode,
   AIProviderId,
   AIToolIntegrationMode,
-  CursorAuthMode,
   ExternalAgentConfig,
   ProviderConfig,
   WebSearchConfig,
@@ -32,23 +30,14 @@ import { notifyUserSkillsStatusChanged } from "../../ai/userSkillsStatusEvents";
 
 import type {
   AgentPathInfo,
-  CodexAppServerStatus,
-  CodexIntegrationStatus,
-  CodexLoginSession,
   UserSkillsStatusResult,
 } from "./ai/types";
 import {
-  AGENT_DEFAULTS,
   getBridge,
-  isCursorAvailableForMode,
-  normalizeCodexBridgeError,
 } from "./ai/types";
 import { ProviderCard } from "./ai/ProviderCard";
 import { AddProviderDropdown } from "./ai/AddProviderDropdown";
-import { CodexConnectionCard } from "./ai/CodexConnectionCard";
-import { ClaudeCodeCard } from "./ai/ClaudeCodeCard";
 import { CopilotCliCard } from "./ai/CopilotCliCard";
-import { CodebuddyCard } from "./ai/CodebuddyCard";
 import { SafetySettings } from "./ai/SafetySettings";
 import { ExternalMcpCard } from "./ai/ExternalMcpCard";
 import { ToolAccessGuidance } from "./ai/ToolAccessGuidance";
@@ -57,17 +46,12 @@ import { useAIPermissionGrantsState } from "../../../application/state/useAIPerm
 import { WebSearchSettings } from "./ai/WebSearchSettings";
 import { QuickMessagesSettings } from "./ai/QuickMessagesSettings";
 import type { AIQuickMessage } from "../../../infrastructure/ai/quickMessages";
-import { encryptField } from "../../../infrastructure/persistence/secureFieldAdapter";
-import { CursorSdkCard } from "./ai/CursorSdkCard";
 import {
   areExternalAgentListsEqual,
   buildManagedAgentState,
+  filterSupportedManagedAgents,
   getInitialManagedAgentPaths,
-  updateCodebuddyManagedEnv,
-  updateCodebuddyManagedOptions,
 } from "./ai/managedAgentState";
-import { splitClaudeEnv, buildClaudeEnv } from "./ai/claudeConfigEnv";
-import { splitCodebuddyEnv } from "./ai/codebuddyConfigEnv";
 
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
@@ -118,15 +102,6 @@ function getSavedManagedAgentPathInfo(
     authenticated: undefined,
     authSource: null,
   };
-}
-
-function getManagedAgentCommandPath(
-  agents: ExternalAgentConfig[],
-  agentKey: ManagedAgentKey,
-): string {
-  const managed = agents.find((agent) => agent.id === `discovered_${agentKey}`);
-  const command = typeof managed?.command === "string" ? managed.command.trim() : "";
-  return command && (command.includes("/") || command.includes("\\")) ? command : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -213,151 +188,44 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
   const { t } = useI18n();
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [removeProviderConfirm, setRemoveProviderConfirm] = useState<{ id: string; name: string } | null>(null);
-  const [codexIntegration, setCodexIntegration] = useState<CodexIntegrationStatus | null>(null);
-  const [codexLoginSession, setCodexLoginSession] = useState<CodexLoginSession | null>(null);
-  const [isCodexLoading, setIsCodexLoading] = useState(false);
-  const [codexError, setCodexError] = useState<string | null>(null);
-  const [codexAppServerStatus, setCodexAppServerStatus] = useState<CodexAppServerStatus | null>(null);
-  const initialManagedPathsRef = useRef<{
-    codex: string;
-    claude: string;
-    copilot: string;
-    cursor: string;
-    codebuddy: string;
-    opencode: string;
-    grok: string;
-    mimo: string;
-  } | null>(null);
+  const initialManagedPathsRef = useRef<{ pi: string } | null>(null);
   if (!initialManagedPathsRef.current) {
     initialManagedPathsRef.current = getInitialManagedAgentPaths(externalAgents);
   }
 
-  // Path detection state
-  const [codexPathInfo, setCodexPathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "codex"),
-  );
-  const [codexCustomPath, setCodexCustomPath] = useState(() => initialManagedPathsRef.current?.codex ?? "");
-  const [isResolvingCodex, setIsResolvingCodex] = useState(false);
+  // Remove stale external-agent entries written by older Netcatty versions.
+  useEffect(() => {
+    const filtered = filterSupportedManagedAgents(externalAgents);
+    if (filtered.length !== externalAgents.length) {
+      setExternalAgents(filtered);
+    }
+  }, [externalAgents, setExternalAgents]);
+
   const [activeSubTab, setActiveSubTab] = useState<AISettingsSubTab>("providers");
   const settingsFocus = useOptionalSettingsFocus();
 
-  const [claudePathInfo, setClaudePathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "claude"),
+  const [piPathInfo, setPiPathInfo] = useState<AgentPathInfo | null>(
+    () => getSavedManagedAgentPathInfo(externalAgents, "pi"),
   );
-  const [claudeCustomPath, setClaudeCustomPath] = useState(() => initialManagedPathsRef.current?.claude ?? "");
-  const [isResolvingClaude, setIsResolvingClaude] = useState(false);
+  const [piCustomPath, setPiCustomPath] = useState(() => initialManagedPathsRef.current?.pi ?? "");
+  const [isResolvingPi, setIsResolvingPi] = useState(false);
 
-  const claudeManagedEnv = useMemo(
-    () => externalAgents.find((a) => a.id === "discovered_claude")?.env,
-    [externalAgents],
-  );
-  const {
-    configDir: claudeConfigDir,
-    settingsPath: claudeSettingsPath,
-    envText: claudeEnvText,
-  } = useMemo(() => splitClaudeEnv(claudeManagedEnv), [claudeManagedEnv]);
-
-  const updateClaudeEnv = useCallback(
-    (nextConfigDir: string, nextSettingsPath: string, nextEnvText: string) => {
-      setExternalAgents((prev) =>
-        prev.map((a) =>
-          a.id === "discovered_claude"
-            ? { ...a, env: buildClaudeEnv(a.env, nextConfigDir, nextSettingsPath, nextEnvText) }
-            : a,
-        ),
-      );
-    },
-    [setExternalAgents],
-  );
-
-  const [copilotPathInfo, setCopilotPathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "copilot"),
-  );
-  const [copilotCustomPath, setCopilotCustomPath] = useState(() => initialManagedPathsRef.current?.copilot ?? "");
-  const [isResolvingCopilot, setIsResolvingCopilot] = useState(false);
-
-  const [cursorPathInfo, setCursorPathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "cursor"),
-  );
-  const [isResolvingCursor, setIsResolvingCursor] = useState(false);
-
-  const [codebuddyPathInfo, setCodebuddyPathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "codebuddy"),
-  );
-  const [codebuddyCustomPath, setCodebuddyCustomPath] = useState(() => initialManagedPathsRef.current?.codebuddy ?? "");
-  const [isResolvingCodebuddy, setIsResolvingCodebuddy] = useState(false);
-
-  const [opencodePathInfo, setOpencodePathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "opencode"),
-  );
-  const [opencodeCustomPath, setOpencodeCustomPath] = useState(() => initialManagedPathsRef.current?.opencode ?? "");
-  const [isResolvingOpencode, setIsResolvingOpencode] = useState(false);
-
-  const [grokPathInfo, setGrokPathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "grok"),
-  );
-  const [grokCustomPath, setGrokCustomPath] = useState(() => initialManagedPathsRef.current?.grok ?? "");
-  const [isResolvingGrok, setIsResolvingGrok] = useState(false);
-
-  const [mimoPathInfo, setMimoPathInfo] = useState<AgentPathInfo | null>(
-    () => getSavedManagedAgentPathInfo(externalAgents, "mimo"),
-  );
-  const [mimoCustomPath, setMimoCustomPath] = useState(() => initialManagedPathsRef.current?.mimo ?? "");
-  const [isResolvingMimo, setIsResolvingMimo] = useState(false);
-
-  const codebuddyManagedAgent = useMemo(
-    () => externalAgents.find((a) => a.id === "discovered_codebuddy"),
-    [externalAgents],
-  );
-  const codebuddyManagedEnv = codebuddyManagedAgent?.env;
-  const codebuddyAdvancedOptions = codebuddyManagedAgent?.codebuddyOptions;
-  const updateCodebuddyAdvancedOptions = useCallback(
-    (options: import("../../../infrastructure/ai/types").CodebuddyAdvancedOptions | undefined) => {
-      setExternalAgents((prev) => updateCodebuddyManagedOptions(prev, options));
-    },
-    [setExternalAgents],
-  );
-  const {
-    internetEnv: codebuddyInternetEnv,
-    envText: codebuddyEnvText,
-  } = useMemo(() => splitCodebuddyEnv(codebuddyManagedEnv), [codebuddyManagedEnv]);
-  const updateCodebuddyEnv = useCallback(
-    (nextInternetEnv: string, nextEnvText: string) => {
-      setExternalAgents((prev) =>
-        updateCodebuddyManagedEnv(prev, nextInternetEnv, nextEnvText),
-      );
-    },
-    [setExternalAgents],
-  );
   const [userSkillsStatus, setUserSkillsStatus] = useState<UserSkillsStatusResult | null>(null);
   const [isLoadingUserSkills, setIsLoadingUserSkills] = useState(false);
-  const cursorManagedAgent = useMemo(
-    () => externalAgents.find((agent) => agent.id === "discovered_cursor"),
-    [externalAgents],
-  );
-  const cursorApiKeyEncrypted = cursorManagedAgent?.apiKey;
-  const cursorAuthMode: CursorAuthMode = cursorManagedAgent?.cursorAuthMode === "cli-login"
-    ? "cli-login"
-    : "api-key";
 
   // Ref to read current defaultAgentId without adding it as a dependency.
   const defaultAgentIdRef = useRef(defaultAgentId);
   defaultAgentIdRef.current = defaultAgentId;
   const autoResolvedAgentStateRef = useRef<Partial<Record<ManagedAgentKey, "pending" | "done">>>({});
-  const codexIntegrationLoadedRef = useRef(false);
   const userSkillsLoadedRef = useRef(false);
   const mountedRef = useRef(true);
   const agentPathRequestIdRef = useRef<Partial<Record<ManagedAgentKey, number>>>({});
-  const codexRequestIdRef = useRef(0);
   useEffect(() => {
     mountedRef.current = true;
     const agentPathRequestIds = agentPathRequestIdRef.current;
     return () => {
       mountedRef.current = false;
-      codexRequestIdRef.current += 1;
-      for (const key of ["codex", "claude", "copilot", "cursor", "codebuddy", "opencode", "grok", "mimo"] as ManagedAgentKey[]) {
-        agentPathRequestIds[key] = (agentPathRequestIds[key] ?? 0) + 1;
-      }
+      agentPathRequestIds.pi = (agentPathRequestIds.pi ?? 0) + 1;
     };
   }, []);
 
@@ -366,23 +234,7 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
     result: AgentPathInfo | null,
     commandSource: "manual" | "auto" = "auto",
   ) => {
-    const setInfo = agentKey === "codex"
-      ? setCodexPathInfo
-      : agentKey === "claude"
-        ? setClaudePathInfo
-        : agentKey === "copilot"
-          ? setCopilotPathInfo
-          : agentKey === "cursor"
-            ? setCursorPathInfo
-            : agentKey === "codebuddy"
-              ? setCodebuddyPathInfo
-              : agentKey === "opencode"
-                ? setOpencodePathInfo
-                : agentKey === "grok"
-                  ? setGrokPathInfo
-                  : setMimoPathInfo;
-
-    setInfo(result);
+    setPiPathInfo(result);
 
     let nextDefaultId: string | null = null;
     setExternalAgents((prev) => {
@@ -402,7 +254,6 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
     agentKey: ManagedAgentKey,
     customPath = "",
     options?: {
-      apiKeyPresent?: boolean;
       refreshShellEnv?: boolean;
       commandSource?: "manual" | "auto";
       removeUnavailableManualPath?: boolean;
@@ -411,23 +262,7 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
     const bridge = getBridge();
     if (!bridge?.aiResolveCli) return null;
 
-    const setResolving = agentKey === "codex"
-      ? setIsResolvingCodex
-      : agentKey === "claude"
-        ? setIsResolvingClaude
-        : agentKey === "copilot"
-          ? setIsResolvingCopilot
-          : agentKey === "cursor"
-            ? setIsResolvingCursor
-            : agentKey === "codebuddy"
-              ? setIsResolvingCodebuddy
-              : agentKey === "opencode"
-                ? setIsResolvingOpencode
-                : agentKey === "grok"
-                  ? setIsResolvingGrok
-                  : setIsResolvingMimo;
-
-    setResolving(true);
+    setIsResolvingPi(true);
     const requestId = (agentPathRequestIdRef.current[agentKey] ?? 0) + 1;
     agentPathRequestIdRef.current[agentKey] = requestId;
     const isCurrentRequest = () => (
@@ -439,13 +274,6 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
         command: agentKey,
         customPath: customPath.trim(),
         refreshShellEnv: Boolean(options?.refreshShellEnv),
-        ...(agentKey === "cursor" ? {
-        // Always report stored key presence so discovery can set apiKeyOk even
-        // while the user is in CLI-login mode (mode is separate from capability).
-        apiKeyPresent: (options?.apiKeyPresent !== undefined
-          ? Boolean(options.apiKeyPresent)
-          : Boolean(cursorApiKeyEncrypted)),
-      } : {}),
       });
       if (!isCurrentRequest()) return null;
       if (
@@ -454,22 +282,7 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
         && !result?.available
         && !options.removeUnavailableManualPath
       ) {
-        const setInfo = agentKey === "codex"
-          ? setCodexPathInfo
-          : agentKey === "claude"
-            ? setClaudePathInfo
-            : agentKey === "copilot"
-              ? setCopilotPathInfo
-              : agentKey === "cursor"
-                ? setCursorPathInfo
-                : agentKey === "codebuddy"
-                  ? setCodebuddyPathInfo
-                  : agentKey === "opencode"
-                    ? setOpencodePathInfo
-                    : agentKey === "grok"
-                      ? setGrokPathInfo
-                      : setMimoPathInfo;
-        setInfo(result);
+        setPiPathInfo(result);
         return result;
       }
       applyResolvedAgentPath(agentKey, result, options?.commandSource ?? "auto");
@@ -480,41 +293,23 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
       return null;
     } finally {
       if (isCurrentRequest()) {
-        setResolving(false);
+        setIsResolvingPi(false);
       }
     }
-  }, [applyResolvedAgentPath, cursorApiKeyEncrypted]);
+  }, [applyResolvedAgentPath]);
 
   useEffect(() => {
     if (activeSubTab !== "agents") return;
 
     const initialPaths = initialManagedPathsRef.current;
-    const tasks: Array<{
-      key: ManagedAgentKey;
-      delayMs: number;
-      path: string;
-      options?: { apiKeyPresent?: boolean };
-    }> = [
-      { key: "codex", delayMs: 160, path: initialPaths?.codex ?? "" },
-      { key: "claude", delayMs: 440, path: initialPaths?.claude ?? "" },
-      { key: "copilot", delayMs: 720, path: initialPaths?.copilot ?? "" },
-      {
-        key: "cursor",
-        delayMs: 1000,
-        path: initialPaths?.cursor ?? "",
-        options: { apiKeyPresent: Boolean(cursorApiKeyEncrypted) },
-      },
-      { key: "codebuddy", delayMs: 1280, path: initialPaths?.codebuddy ?? "" },
-      { key: "opencode", delayMs: 1560, path: initialPaths?.opencode ?? "" },
-      { key: "grok", delayMs: 1840, path: initialPaths?.grok ?? "" },
-      { key: "mimo", delayMs: 2120, path: initialPaths?.mimo ?? "" },
+    const tasks: Array<{ key: ManagedAgentKey; delayMs: number; path: string }> = [
+      { key: "pi", delayMs: 240, path: initialPaths?.pi ?? "" },
     ];
     const cancelTasks = tasks
       .filter((task) => !autoResolvedAgentStateRef.current[task.key])
       .map((task) => scheduleAfterFirstPaint(() => {
         autoResolvedAgentStateRef.current[task.key] = "pending";
         void resolveAgentPath(task.key, task.path, {
-          ...task.options,
           commandSource: task.path ? "manual" : "auto",
           removeUnavailableManualPath: Boolean(task.path),
         }).finally(() => {
@@ -524,77 +319,7 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
     return () => {
       for (const cancel of cancelTasks) cancel();
     };
-  }, [activeSubTab, cursorApiKeyEncrypted, cursorAuthMode, resolveAgentPath]);
-
-  const handleSaveCursorApiKey = useCallback(async (apiKey: string) => {
-    const trimmed = apiKey.trim();
-    const encrypted = trimmed ? await encryptField(trimmed) : undefined;
-    const result = await resolveAgentPath("cursor", "", { apiKeyPresent: Boolean(trimmed) });
-    setExternalAgents((prev) => {
-      const existing = prev.find((agent) => agent.id === "discovered_cursor");
-      const others = prev.filter((agent) => agent.id !== "discovered_cursor");
-      if (!encrypted && !existing) return prev;
-      if (!encrypted && existing && !result?.available) return others;
-      const modeAvailable = isCursorAvailableForMode(result, "api-key", {
-        hasStoredApiKey: Boolean(encrypted),
-      });
-      const nextAgent: ExternalAgentConfig = {
-        ...(existing ?? {
-          id: "discovered_cursor",
-          name: "Cursor",
-          command: result?.path || cursorPathInfo?.path || "cursor",
-          args: ["{prompt}"],
-          icon: "cursor",
-          sdkBackend: "cursor",
-          enabled: false,
-        }),
-        apiKey: encrypted,
-        cursorAuthMode: "api-key",
-        command: result?.path || existing?.command || cursorPathInfo?.path || "cursor",
-        available: modeAvailable,
-        // Preserve enable preference; available alone gates send for this mode.
-        enabled: existing?.enabled ?? true,
-      };
-      return [...others, nextAgent];
-    });
-  }, [cursorPathInfo?.path, resolveAgentPath, setExternalAgents]);
-
-  const handleCursorAuthModeChange = useCallback((mode: CursorAuthMode) => {
-    setExternalAgents((prev) => {
-      const existing = prev.find((agent) => agent.id === "discovered_cursor");
-      const others = prev.filter((agent) => agent.id !== "discovered_cursor");
-      const preservedApiKey = existing?.apiKey || cursorApiKeyEncrypted;
-      const nextAgent: ExternalAgentConfig = {
-        ...(existing ?? {
-          id: "discovered_cursor",
-          name: "Cursor",
-          command: cursorPathInfo?.path || "cursor",
-          args: ["{prompt}"],
-          icon: "cursor",
-          sdkBackend: "cursor",
-          enabled: false,
-        }),
-        cursorAuthMode: mode,
-        // Explicitly keep stored API key when switching CLI ↔ API Key modes.
-        // CLI turns omit CURSOR_API_KEY via env wiring without destroying credentials.
-        ...(preservedApiKey ? { apiKey: preservedApiKey } : {}),
-        command: mode === "cli-login"
-          ? (cursorPathInfo?.cliBinPath || cursorPathInfo?.path || existing?.command || "cursor")
-          : (existing?.command || cursorPathInfo?.path || "cursor"),
-        available: isCursorAvailableForMode(cursorPathInfo, mode, {
-          hasStoredApiKey: Boolean(preservedApiKey),
-        }),
-        // Preserve user enable preference across mode peeks; `available` alone
-        // gates send eligibility when the mode cannot run.
-        enabled: existing?.enabled ?? true,
-      };
-      return [...others, nextAgent];
-    });
-    void resolveAgentPath("cursor", "", {
-      // Always report stored key presence for discovery fields; mode is separate.
-      apiKeyPresent: Boolean(cursorApiKeyEncrypted),
-    });
-  }, [cursorApiKeyEncrypted, cursorPathInfo, resolveAgentPath, setExternalAgents]);
+  }, [activeSubTab, resolveAgentPath]);
 
   // Add a new provider from preset
   const handleAddProvider = useCallback(
@@ -641,7 +366,7 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
   const agentOptions = useMemo(() => [
     { value: "catty", label: t('ai.defaultAgent.catty'), icon: <AgentIconBadge agent={{ id: "catty", type: "builtin" }} size="xs" variant="plain" /> },
     ...externalAgents
-      .filter((a) => canSendWithAgent(a.id, externalAgents))
+      .filter((a) => (a.id === "discovered_pi" || a.sdkBackend === "pi") && canSendWithAgent(a.id, externalAgents))
       .map((a) => ({ value: a.id, label: a.name, icon: <AgentIconBadge agent={a} size="xs" variant="plain" /> })),
   ], [externalAgents, t]);
 
@@ -659,295 +384,23 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
     }, 900);
   }, []);
 
-  const codexManagedAgent = useMemo(
-    () => externalAgents.find((agent) => agent.id === "discovered_codex"),
-    [externalAgents],
-  );
-
-  const refreshCodexIntegration = useCallback(async (opts?: { refreshShellEnv?: boolean; validateChatGptAuth?: boolean; codexPath?: string }) => {
-    const bridge = getBridge();
-    if (!bridge?.aiCodexGetIntegration) return;
-
-    const requestId = codexRequestIdRef.current + 1;
-    codexRequestIdRef.current = requestId;
-    const isCurrentRequest = () => mountedRef.current && codexRequestIdRef.current === requestId;
-    setIsCodexLoading(true);
-    setCodexError(null);
-    try {
-      const integration = await bridge.aiCodexGetIntegration({ ...opts, agentEnv: codexManagedAgent?.env });
-      if (!isCurrentRequest()) return;
-      setCodexIntegration(integration);
-    } catch (err) {
-      if (isCurrentRequest()) {
-        setCodexError(normalizeCodexBridgeError(err));
-      }
-    } finally {
-      if (isCurrentRequest()) {
-        setIsCodexLoading(false);
-      }
-    }
-  }, [codexManagedAgent?.env]);
-
-  const codexCommittedPath = useMemo(
-    () => getManagedAgentCommandPath(externalAgents, "codex") || codexPathInfo?.path || undefined,
-    [externalAgents, codexPathInfo?.path],
-  );
-  const hasPendingCodexCustomPath = Boolean(
-    codexCustomPath.trim()
-    && codexCustomPath.trim() !== codexCommittedPath,
-  );
-
-  const getCodexPathOverride = useCallback(() => (
-    codexCommittedPath
-  ), [codexCommittedPath]);
-
-  const codexRuntime = codexManagedAgent?.codexRuntime ?? 'sdk';
-
-  const refreshCodexAppServerStatus = useCallback(async () => {
-    const bridge = getBridge();
-    if (!bridge?.codexAppServerGetStatus || !codexCommittedPath) {
-      setCodexAppServerStatus(null);
-      return;
-    }
-    setCodexAppServerStatus({ available: false, checking: true });
-    try {
-      const result = await bridge.codexAppServerGetStatus(codexCommittedPath, codexManagedAgent?.env);
-      setCodexAppServerStatus({
-        available: result?.available === true,
-        error: result?.available ? undefined : result?.error,
-      });
-    } catch (error) {
-      setCodexAppServerStatus({
-        available: false,
-        error: normalizeCodexBridgeError(error),
-      });
-    }
-  }, [codexCommittedPath, codexManagedAgent?.env]);
-
-  const handleCodexRuntimeChange = useCallback((runtime: 'sdk' | 'app-server') => {
-    setExternalAgents((agents) => agents.map((agent) => (
-      agent.id === "discovered_codex" ? { ...agent, codexRuntime: runtime } : agent
-    )));
-  }, [setExternalAgents]);
-
-  const handleGrokRuntimeChange = useCallback((runtime: 'acp' | 'streaming-json') => {
-    setExternalAgents((agents) => {
-      const managedId = "discovered_grok";
-      const existing = agents.find((agent) => agent.id === managedId);
-      if (existing) {
-        return agents.map((agent) => (
-          agent.id === managedId ? { ...agent, grokRuntime: runtime } : agent
-        ));
-      }
-      // Path not yet resolved: still persist preference on a disabled placeholder.
-      return [
-        ...agents,
-        {
-          ...AGENT_DEFAULTS.grok,
-          id: managedId,
-          command: "grok",
-          enabled: false,
-          available: false,
-          grokRuntime: runtime,
-        },
-      ];
-    });
-  }, [setExternalAgents]);
-
   // Validate a custom path for an agent.
   const handleCheckCustomPath = useCallback(async (agentKey: ManagedAgentKey) => {
-    const customPath = agentKey === "codex"
-      ? codexCustomPath
-      : agentKey === "claude"
-        ? claudeCustomPath
-        : agentKey === "copilot"
-          ? copilotCustomPath
-          : agentKey === "codebuddy"
-            ? codebuddyCustomPath
-            : agentKey === "opencode"
-              ? opencodeCustomPath
-              : agentKey === "grok"
-                ? grokCustomPath
-                : agentKey === "mimo"
-                  ? mimoCustomPath
-                  : "";
-    const result = await resolveAgentPath(agentKey, customPath, {
+    const customPath = agentKey === "pi" ? piCustomPath : "";
+    await resolveAgentPath(agentKey, customPath, {
       refreshShellEnv: true,
       commandSource: customPath.trim() ? "manual" : "auto",
     });
-    if (agentKey === "codex") {
-      await refreshCodexIntegration({
-        refreshShellEnv: true,
-        validateChatGptAuth: true,
-        codexPath: result?.path || customPath.trim() || undefined,
-      });
-    }
-  }, [claudeCustomPath, codexCustomPath, copilotCustomPath, codebuddyCustomPath, opencodeCustomPath, grokCustomPath, mimoCustomPath, resolveAgentPath, refreshCodexIntegration]);
+  }, [piCustomPath, resolveAgentPath]);
 
   const handleResetCustomPath = useCallback(async (agentKey: ManagedAgentKey) => {
-    if (agentKey === "codex") {
-      setCodexCustomPath("");
-    } else if (agentKey === "claude") {
-      setClaudeCustomPath("");
-    } else if (agentKey === "copilot") {
-      setCopilotCustomPath("");
-    } else if (agentKey === "codebuddy") {
-      setCodebuddyCustomPath("");
-    } else if (agentKey === "opencode") {
-      setOpencodeCustomPath("");
-    } else if (agentKey === "grok") {
-      setGrokCustomPath("");
-    } else if (agentKey === "mimo") {
-      setMimoCustomPath("");
-    }
+    if (agentKey === "pi") setPiCustomPath("");
 
-    const result = await resolveAgentPath(agentKey, "", {
+    await resolveAgentPath(agentKey, "", {
       refreshShellEnv: true,
       commandSource: "auto",
-      ...(agentKey === "cursor" ? {
-        apiKeyPresent: Boolean(cursorApiKeyEncrypted),
-      } : {}),
     });
-    if (agentKey === "codex") {
-      await refreshCodexIntegration({
-        refreshShellEnv: true,
-        validateChatGptAuth: true,
-        codexPath: result?.path || undefined,
-      });
-    }
-  }, [cursorApiKeyEncrypted, resolveAgentPath, refreshCodexIntegration]);
-
-  useEffect(() => {
-    if (activeSubTab !== "agents") return;
-    if (codexIntegrationLoadedRef.current) return;
-    return scheduleAfterFirstPaint(() => {
-      codexIntegrationLoadedRef.current = true;
-      void refreshCodexIntegration({ codexPath: getCodexPathOverride() });
-    }, 620);
-  }, [activeSubTab, getCodexPathOverride, refreshCodexIntegration]);
-
-  useEffect(() => {
-    if (activeSubTab !== "agents" || !codexPathInfo?.available) return;
-    return scheduleAfterFirstPaint(() => {
-      void refreshCodexAppServerStatus();
-    }, 760);
-  }, [activeSubTab, codexPathInfo?.available, refreshCodexAppServerStatus]);
-
-  useEffect(() => {
-    if (!codexLoginSession || codexLoginSession.state !== "running") {
-      return;
-    }
-
-    const bridge = getBridge();
-    if (!bridge?.aiCodexGetLoginSession) {
-      return;
-    }
-
-    let cancelled = false;
-    const intervalId = window.setInterval(() => {
-      void bridge.aiCodexGetLoginSession?.(codexLoginSession.sessionId).then((result) => {
-        if (cancelled || !result?.ok || !result.session) return;
-
-        setCodexLoginSession(result.session);
-        if (result.session.state !== "running") {
-          if (result.session.state === "success") {
-            void refreshCodexIntegration({
-              validateChatGptAuth: true,
-              codexPath: result.session.codexPath || getCodexPathOverride(),
-            });
-          }
-        }
-      }).catch((err) => {
-        if (!cancelled) {
-          setCodexError(normalizeCodexBridgeError(err));
-        }
-      });
-    }, 1000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [codexLoginSession, getCodexPathOverride, refreshCodexIntegration]);
-
-  const handleStartCodexLogin = useCallback(async () => {
-    const bridge = getBridge();
-    if (!bridge?.aiCodexStartLogin) return;
-
-    const requestId = codexRequestIdRef.current + 1;
-    codexRequestIdRef.current = requestId;
-    const isCurrentRequest = () => mountedRef.current && codexRequestIdRef.current === requestId;
-    setCodexError(null);
-    setIsCodexLoading(true);
-    try {
-      const result = await bridge.aiCodexStartLogin({ codexPath: getCodexPathOverride(), agentEnv: codexManagedAgent?.env });
-      if (!isCurrentRequest()) return;
-      if (!result.ok || !result.session) {
-        throw new Error(result.error || "Failed to start Codex login");
-      }
-      setCodexLoginSession(result.session);
-    } catch (err) {
-      if (isCurrentRequest()) {
-        setCodexError(normalizeCodexBridgeError(err));
-      }
-    } finally {
-      if (isCurrentRequest()) {
-        setIsCodexLoading(false);
-      }
-    }
-  }, [getCodexPathOverride, codexManagedAgent?.env]);
-
-  const handleCancelCodexLogin = useCallback(async () => {
-    const bridge = getBridge();
-    if (!bridge?.aiCodexCancelLogin || !codexLoginSession) return;
-
-    setCodexError(null);
-    try {
-      const result = await bridge.aiCodexCancelLogin(codexLoginSession.sessionId);
-      if (result.session) {
-        setCodexLoginSession(result.session);
-      }
-    } catch (err) {
-      setCodexError(normalizeCodexBridgeError(err));
-    }
-  }, [codexLoginSession]);
-
-  const handleOpenCodexLoginUrl = useCallback(() => {
-    const bridge = getBridge();
-    const url = codexLoginSession?.url;
-    if (!bridge?.openExternal || !url) return;
-    // Only allow https:// URLs to prevent opening arbitrary protocols
-    if (!url.startsWith("https://")) return;
-    void bridge.openExternal(url);
-  }, [codexLoginSession]);
-
-  const handleCodexLogout = useCallback(async () => {
-    const bridge = getBridge();
-    if (!bridge?.aiCodexLogout) return;
-
-    const requestId = codexRequestIdRef.current + 1;
-    codexRequestIdRef.current = requestId;
-    const isCurrentRequest = () => mountedRef.current && codexRequestIdRef.current === requestId;
-    setCodexError(null);
-    setIsCodexLoading(true);
-    try {
-      const result = await bridge.aiCodexLogout({ codexPath: getCodexPathOverride(), agentEnv: codexManagedAgent?.env });
-      if (!isCurrentRequest()) return;
-      if (!result.ok) {
-        throw new Error(result.error || "Failed to log out from Codex");
-      }
-      setCodexLoginSession(null);
-      await refreshCodexIntegration({ refreshShellEnv: true, validateChatGptAuth: true, codexPath: getCodexPathOverride() });
-    } catch (err) {
-      if (isCurrentRequest()) {
-        setCodexError(normalizeCodexBridgeError(err));
-      }
-    } finally {
-      if (isCurrentRequest()) {
-        setIsCodexLoading(false);
-      }
-    }
-  }, [getCodexPathOverride, refreshCodexIntegration, codexManagedAgent?.env]);
+  }, [resolveAgentPath]);
 
   const refreshUserSkillsStatus = useCallback(async () => {
     const bridge = getBridge();
@@ -1089,154 +542,17 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
 
         <TabsContent value="agents" className="m-0 space-y-6">
           <SettingsSection
-            anchorId="ai-codex"
-            title={t('ai.codex')}
-            leading={<AgentIconBadge agent={{ id: "codex", icon: "openai", name: "Codex CLI" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <CodexConnectionCard
-              pathInfo={codexPathInfo}
-              isResolvingPath={isResolvingCodex}
-              customPath={codexCustomPath}
-              onCustomPathChange={setCodexCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("codex")}
-              onResetPath={() => void handleResetCustomPath("codex")}
-              integration={codexIntegration}
-              loginSession={codexLoginSession}
-              isLoading={isCodexLoading}
-              hasPendingCustomPath={hasPendingCodexCustomPath}
-              error={codexError}
-              onRefresh={() => void refreshCodexIntegration({ refreshShellEnv: true, validateChatGptAuth: true, codexPath: getCodexPathOverride() })}
-              onConnect={() => void handleStartCodexLogin()}
-              onCancel={() => void handleCancelCodexLogin()}
-              onOpenUrl={handleOpenCodexLoginUrl}
-              onLogout={() => void handleCodexLogout()}
-              appServerRuntime={codexRuntime}
-              appServerStatus={codexAppServerStatus}
-              onAppServerRuntimeChange={handleCodexRuntimeChange}
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            anchorId="ai-claude"
-            title={t('ai.claude.title')}
-            leading={<AgentIconBadge agent={{ id: "claude", icon: "claude", name: "Claude Code" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <ClaudeCodeCard
-              pathInfo={claudePathInfo}
-              isResolvingPath={isResolvingClaude}
-              customPath={claudeCustomPath}
-              onCustomPathChange={setClaudeCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("claude")}
-              onResetPath={() => void handleResetCustomPath("claude")}
-              configDir={claudeConfigDir}
-              onConfigDirChange={(v) => updateClaudeEnv(v, claudeSettingsPath, claudeEnvText)}
-              settingsPath={claudeSettingsPath}
-              onSettingsPathChange={(v) => updateClaudeEnv(claudeConfigDir, v, claudeEnvText)}
-              envText={claudeEnvText}
-              onEnvTextChange={(v) => updateClaudeEnv(claudeConfigDir, claudeSettingsPath, v)}
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            anchorId="ai-copilot"
-            title={t('ai.copilot.title')}
-            leading={<AgentIconBadge agent={{ id: "copilot", icon: "copilot", name: "GitHub Copilot CLI" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
+            title={t('ai.pi.title')}
+            leading={<AgentIconBadge agent={{ id: "pi", icon: "terminal", name: "Pi" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
           >
             <CopilotCliCard
-              pathInfo={copilotPathInfo}
-              isResolvingPath={isResolvingCopilot}
-              customPath={copilotCustomPath}
-              onCustomPathChange={setCopilotCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("copilot")}
-              onResetPath={() => void handleResetCustomPath("copilot")}
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            anchorId="ai-cursor"
-            title={t('ai.cursor.title')}
-            leading={<AgentIconBadge agent={{ id: "cursor", icon: "cursor", name: "Cursor" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <CursorSdkCard
-              pathInfo={cursorPathInfo}
-              isResolvingPath={isResolvingCursor}
-              encryptedApiKey={cursorApiKeyEncrypted}
-              authMode={cursorAuthMode}
-              onAuthModeChange={handleCursorAuthModeChange}
-              onSaveApiKey={handleSaveCursorApiKey}
-              onRecheckPath={() => void handleCheckCustomPath("cursor")}
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            anchorId="ai-codebuddy"
-            title={t('ai.codebuddy.title')}
-            leading={<AgentIconBadge agent={{ id: "codebuddy", icon: "codebuddy", name: "CodeBuddy Code" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <CodebuddyCard
-              pathInfo={codebuddyPathInfo}
-              isResolvingPath={isResolvingCodebuddy}
-              customPath={codebuddyCustomPath}
-              onCustomPathChange={setCodebuddyCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("codebuddy")}
-              onResetPath={() => void handleResetCustomPath("codebuddy")}
-              internetEnv={codebuddyInternetEnv}
-              onInternetEnvChange={(v) => updateCodebuddyEnv(v, codebuddyEnvText)}
-              envText={codebuddyEnvText}
-              onEnvTextChange={(v) => updateCodebuddyEnv(codebuddyInternetEnv, v)}
-              advancedOptions={codebuddyAdvancedOptions}
-              onAdvancedOptionsChange={updateCodebuddyAdvancedOptions}
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            title={t('ai.opencode.title')}
-            leading={<AgentIconBadge agent={{ id: "opencode", icon: "opencode", name: "OpenCode" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <CopilotCliCard
-              pathInfo={opencodePathInfo}
-              isResolvingPath={isResolvingOpencode}
-              customPath={opencodeCustomPath}
-              onCustomPathChange={setOpencodeCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("opencode")}
-              onResetPath={() => void handleResetCustomPath("opencode")}
-              i18nPrefix="ai.opencode"
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            title={t('ai.grok.title')}
-            leading={<AgentIconBadge agent={{ id: "grok", icon: "grok", name: "Grok Build" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <CopilotCliCard
-              pathInfo={grokPathInfo}
-              isResolvingPath={isResolvingGrok}
-              customPath={grokCustomPath}
-              onCustomPathChange={setGrokCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("grok")}
-              onResetPath={() => void handleResetCustomPath("grok")}
-              i18nPrefix="ai.grok"
-              grokRuntime={
-                externalAgents.find((a) => a.id === "discovered_grok")?.grokRuntime === "streaming-json"
-                  ? "streaming-json"
-                  : "acp"
-              }
-              onGrokRuntimeChange={handleGrokRuntimeChange}
-            />
-          </SettingsSection>
-
-          <SettingsSection
-            title={t('ai.mimo.title')}
-            leading={<AgentIconBadge agent={{ id: "mimo", icon: "mimo", name: "MiMo Code" }} variant="plain" className="h-5 w-5 text-muted-foreground/90" />}
-          >
-            <CopilotCliCard
-              pathInfo={mimoPathInfo}
-              isResolvingPath={isResolvingMimo}
-              customPath={mimoCustomPath}
-              onCustomPathChange={setMimoCustomPath}
-              onRecheckPath={() => void handleCheckCustomPath("mimo")}
-              onResetPath={() => void handleResetCustomPath("mimo")}
-              i18nPrefix="ai.mimo"
+              pathInfo={piPathInfo}
+              isResolvingPath={isResolvingPi}
+              customPath={piCustomPath}
+              onCustomPathChange={setPiCustomPath}
+              onRecheckPath={() => void handleCheckCustomPath("pi")}
+              onResetPath={() => void handleResetCustomPath("pi")}
+              i18nPrefix="ai.pi"
             />
           </SettingsSection>
 

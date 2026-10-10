@@ -11,8 +11,7 @@ import { cn } from '../../lib/utils';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import {
   getExternalAgentSdkBackend,
-  isSettingsManagedDiscoveredAgent,
-  matchesManagedAgentConfig,
+  isPiAgentConfig,
 } from '../../infrastructure/ai/managedAgents';
 import type { AgentInfo, ExternalAgentConfig, DiscoveredAgent } from '../../infrastructure/ai/types';
 import AgentIconBadge from './AgentIconBadge';
@@ -140,7 +139,7 @@ const AgentSelector: React.FC<AgentSelectorProps> = ({
   const enabledExternalAgents = useMemo(
     () =>
       externalAgents
-        .filter((agent) => agent.enabled && Boolean(getExternalAgentSdkBackend(agent)))
+        .filter((agent) => agent.enabled && isPiAgentConfig(agent) && Boolean(getExternalAgentSdkBackend(agent)))
         .map(
           (agent): AgentInfo => ({
             id: agent.id,
@@ -158,14 +157,10 @@ const AgentSelector: React.FC<AgentSelectorProps> = ({
   // Discovered agents not yet added to external agents
   const unconfiguredDiscovered = useMemo(
     () =>
-      discoveredAgents.filter(
-        (da) => {
-          if (isSettingsManagedDiscoveredAgent(da)) {
-            return !externalAgents.some((ea) => matchesManagedAgentConfig(ea, da.command));
-          }
-          return !externalAgents.some((ea) => ea.command === da.command || ea.command === da.path);
-        },
-      ),
+      discoveredAgents
+        .filter((da) => da.command === 'pi' || da.sdkBackend === 'pi')
+        .filter((da) => !externalAgents.some((ea) => isPiAgentConfig(ea)
+          && (ea.command === da.command || ea.command === da.path || ea.id === `discovered_${da.command}`))),
     [discoveredAgents, externalAgents],
   );
 

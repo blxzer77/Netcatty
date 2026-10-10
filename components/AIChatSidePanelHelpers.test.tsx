@@ -136,14 +136,9 @@ test('shouldLoadSdkRuntimeModels includes SDK agents with model catalogs', () =>
     sdkBackend,
   });
 
-  assert.equal(shouldLoadSdkRuntimeModels(agent('claude')), true);
-  assert.equal(shouldLoadSdkRuntimeModels(agent('copilot')), true);
-  assert.equal(shouldLoadSdkRuntimeModels(agent('cursor')), true);
-  assert.equal(shouldLoadSdkRuntimeModels(agent('codebuddy')), true);
-  assert.equal(shouldLoadSdkRuntimeModels(agent('opencode')), true);
-  assert.equal(shouldLoadSdkRuntimeModels(agent('grok')), true);
-  assert.equal(shouldLoadSdkRuntimeModels(agent('codex')), true);
-  assert.equal(shouldLoadSdkRuntimeModels({ ...agent('codex'), codexRuntime: 'app-server' }), true);
+  assert.equal(shouldLoadSdkRuntimeModels(agent('pi')), true);
+  assert.equal(shouldLoadSdkRuntimeModels(agent('claude')), false);
+  assert.equal(shouldLoadSdkRuntimeModels(agent('codex')), false);
   assert.equal(shouldLoadSdkRuntimeModels(undefined), false);
 });
 
@@ -273,27 +268,27 @@ test('normalizeSdkRuntimeModelPresets preserves SDK current model without a cata
   );
 });
 
-test('shouldUseStoredAgentModel trusts SDK defaults when no runtime list is returned', () => {
-  const opencodeAgent: ExternalAgentConfig = {
-    id: 'managed_opencode',
-    name: 'OpenCode',
-    command: 'opencode',
+test('shouldUseStoredAgentModel trusts Pi defaults when no runtime list is returned', () => {
+  const piAgent: ExternalAgentConfig = {
+    id: 'discovered_pi',
+    name: 'Pi',
+    command: 'pi',
     enabled: true,
-    sdkBackend: 'opencode',
+    sdkBackend: 'pi',
   };
 
-  assert.equal(shouldUseStoredAgentModel('openai/gpt-5.1', [], opencodeAgent), true);
+  assert.equal(shouldUseStoredAgentModel('openai/gpt-5.1', [], piAgent), true);
   assert.equal(shouldUseStoredAgentModel('openai/gpt-5.1', [], undefined), false);
   assert.equal(
     shouldUseStoredAgentModel('anthropic/claude-sonnet', [
       { id: 'anthropic/claude-sonnet', name: 'Claude' },
-    ], opencodeAgent),
+    ], piAgent),
     true,
   );
   assert.equal(
     shouldUseStoredAgentModel('openai/gpt-5.1', [
       { id: 'anthropic/claude-sonnet', name: 'Claude' },
-    ], opencodeAgent),
+    ], piAgent),
     false,
   );
 });

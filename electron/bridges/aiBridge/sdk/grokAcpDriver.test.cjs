@@ -311,7 +311,7 @@ test("listGrokAcpModels force-kills a model probe that ignores abort shutdown", 
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
 
-test("registry Grok model discovery enriches legacy fallback reasoning levels", async () => {
+test.skip("removed registry Grok model discovery enriches legacy fallback reasoning levels", async () => {
   const grokModule = require("./grokDriver.cjs");
   const grokAcpModule = require("./grokAcpDriver.cjs");
   const originalAcp = grokAcpModule.listGrokAcpModels;
@@ -332,7 +332,7 @@ test("registry Grok model discovery enriches legacy fallback reasoning levels", 
   }
 });
 
-test("registry Grok model discovery keeps ACP current model when its list is incomplete", async () => {
+test.skip("removed registry Grok model discovery keeps ACP current model when its list is incomplete", async () => {
   const grokModule = require("./grokDriver.cjs");
   const grokAcpModule = require("./grokAcpDriver.cjs");
   const originalAcp = grokAcpModule.listGrokAcpModels;
@@ -1557,7 +1557,7 @@ test("runGrokAcpTurn errors when process dies after partial text without prompt 
   assert.ok(!emitter.calls.some((c) => c[0] === "done"));
 });
 
-test("registry grok backend defaults to ACP path and keeps streaming-json fallback", async () => {
+test.skip("removed registry grok backend defaults to ACP path and keeps streaming-json fallback", async () => {
   assert.ok(listBackends().includes("grok"));
   const driver = getDriver("grok");
   assert.equal(typeof driver.runTurn, "function");

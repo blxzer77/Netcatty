@@ -292,6 +292,18 @@ export const zhTWAiMessages: Messages = {
   'ai.mimo.check': '檢查',
   'ai.mimo.resetPath': '重設',
 
+  // AI Pi 程式設計 Agent
+  'ai.pi.title': 'Pi',
+  'ai.pi.description': '使用 Pi 程式設計 Agent CLI。請在 Pi 中設定 provider 和憑證，偵測到後即可作為外部程式設計 Agent 使用。',
+  'ai.pi.detecting': '偵測中...',
+  'ai.pi.detected': '已偵測到',
+  'ai.pi.notFound': '未找到',
+  'ai.pi.path': '路徑：',
+  'ai.pi.notFoundHint': '在 PATH 中未找到 pi。請安裝 Pi 或在下方指定執行檔路徑。',
+  'ai.pi.customPathPlaceholder': '例如 /usr/local/bin/pi',
+  'ai.pi.check': '檢查',
+  'ai.pi.resetPath': '重設',
+
   // AI Grok Build（應用內託管 Agent，與 External MCP「新增到 Grok」不同）
   'ai.grok.title': 'Grok Build',
   'ai.grok.description': 'xAI 的 Grok Build 程式設計 Agent CLI。安裝 Grok CLI，使用 `grok login` 登入或設定 XAI_API_KEY 後，即可作為外部 Agent 選擇。',

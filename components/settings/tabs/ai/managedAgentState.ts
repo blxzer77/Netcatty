@@ -1,11 +1,26 @@
 import type { ExternalAgentConfig } from "../../../../infrastructure/ai/types";
 import {
   type ManagedAgentKey,
+  filterSupportedExternalAgents,
   isPathLikeCommand,
 } from "../../../../infrastructure/ai/managedAgents";
 import type { AgentPathInfo } from "./types";
 import { AGENT_DEFAULTS, isCursorAvailableForMode } from "./types";
 import { buildCodebuddyEnv } from "./codebuddyConfigEnv";
+
+// Kept only for migration code that can still receive a legacy persisted entry.
+// These values are intentionally not exported or offered by the Pi-only settings UI.
+const LEGACY_AGENT_DEFAULTS: Record<string, typeof AGENT_DEFAULTS.pi> = {
+  codex: { name: "Codex CLI", args: ["exec", "--full-auto", "--json", "{prompt}"], icon: "openai", sdkBackend: "codex" },
+  claude: { name: "Claude Code", args: ["-p", "--output-format", "text", "{prompt}"], icon: "claude", sdkBackend: "claude" },
+  copilot: { name: "GitHub Copilot CLI", args: ["-p", "{prompt}"], icon: "copilot", sdkBackend: "copilot" },
+  cursor: { name: "Cursor", args: ["{prompt}"], icon: "cursor", sdkBackend: "cursor" },
+  codebuddy: { name: "CodeBuddy Code", args: [], icon: "codebuddy", sdkBackend: "codebuddy" },
+  opencode: { name: "OpenCode", args: [], icon: "opencode", sdkBackend: "opencode" },
+  grok: { name: "Grok Build", args: [], icon: "grok", sdkBackend: "grok" },
+  mimo: { name: "MiMo Code", args: [], icon: "mimo", sdkBackend: "mimo" },
+  pi: AGENT_DEFAULTS.pi,
+};
 
 function getAutoManagedAgentStoredPath(
   agents: ExternalAgentConfig[],
@@ -38,7 +53,7 @@ export function buildManagedAgentState(
   if (!pathInfo?.available || !pathInfo.path) {
     const existingManaged = managedAgents.find((agent) => agent.id === managedId);
     if (agentKey === "cursor" && (existingManaged?.apiKey || existingManaged?.cursorAuthMode === "cli-login")) {
-      const defaults = AGENT_DEFAULTS[agentKey];
+      const defaults = LEGACY_AGENT_DEFAULTS[agentKey];
       const {
         acpCommand: _legacyCommand,
         acpArgs: _legacyArgs,
@@ -78,7 +93,7 @@ export function buildManagedAgentState(
             ...otherAgents,
             {
               ...existingManaged,
-              ...AGENT_DEFAULTS.codebuddy,
+              ...LEGACY_AGENT_DEFAULTS.codebuddy,
               id: managedId,
               command: existingManaged.command || "codebuddy",
               enabled: false,
@@ -103,7 +118,7 @@ export function buildManagedAgentState(
     acpArgs: _legacyArgs,
     ...existingManagedWithoutLegacy
   } = existingManaged ?? {};
-  const defaults = AGENT_DEFAULTS[agentKey];
+  const defaults = LEGACY_AGENT_DEFAULTS[agentKey];
   const managedEnv =
     agentKey === "claude"
       ? { ...(existingManaged?.env ?? {}), CLAUDE_CODE_EXECUTABLE: pathInfo.path }
@@ -183,7 +198,7 @@ export function updateCodebuddyManagedEnv(
   return [
     ...prevAgents,
     {
-      ...AGENT_DEFAULTS.codebuddy,
+      ...LEGACY_AGENT_DEFAULTS.codebuddy,
       id: managedId,
       command: "codebuddy",
       enabled: false,
@@ -219,7 +234,7 @@ export function updateCodebuddyManagedOptions(
   return [
     ...prevAgents,
     {
-      ...AGENT_DEFAULTS.codebuddy,
+      ...LEGACY_AGENT_DEFAULTS.codebuddy,
       id: managedId,
       command: "codebuddy",
       enabled: false,
@@ -230,13 +245,11 @@ export function updateCodebuddyManagedOptions(
 
 export function getInitialManagedAgentPaths(agents: ExternalAgentConfig[]) {
   return {
-    codex: getAutoManagedAgentStoredPath(agents, "codex") ?? "",
-    claude: getAutoManagedAgentStoredPath(agents, "claude") ?? "",
-    copilot: getAutoManagedAgentStoredPath(agents, "copilot") ?? "",
-    cursor: getAutoManagedAgentStoredPath(agents, "cursor") ?? "",
-    codebuddy: getAutoManagedAgentStoredPath(agents, "codebuddy") ?? "",
-    opencode: getAutoManagedAgentStoredPath(agents, "opencode") ?? "",
-    grok: getAutoManagedAgentStoredPath(agents, "grok") ?? "",
-    mimo: getAutoManagedAgentStoredPath(agents, "mimo") ?? "",
+    pi: getAutoManagedAgentStoredPath(agents, "pi") ?? "",
   };
+}
+
+/** Drop persisted external-agent entries that are outside the Pi-only product surface. */
+export function filterSupportedManagedAgents(agents: ExternalAgentConfig[]): ExternalAgentConfig[] {
+  return filterSupportedExternalAgents(agents);
 }

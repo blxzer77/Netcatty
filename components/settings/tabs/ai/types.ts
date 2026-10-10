@@ -193,53 +193,11 @@ export interface NetcattyAiBridge {
 
 // Agent default configs for registration in externalAgents
 export const AGENT_DEFAULTS: Record<string, Omit<ExternalAgentConfig, "id" | "command" | "enabled">> = {
-  codex: {
-    name: "Codex CLI",
-    args: ["exec", "--full-auto", "--json", "{prompt}"],
-    icon: "openai",
-    sdkBackend: "codex",
-  },
-  claude: {
-    name: "Claude Code",
-    args: ["-p", "--output-format", "text", "{prompt}"],
-    icon: "claude",
-    sdkBackend: "claude",
-  },
-  copilot: {
-    name: "GitHub Copilot CLI",
-    args: ["-p", "{prompt}"],
-    icon: "copilot",
-    sdkBackend: "copilot",
-  },
-  cursor: {
-    name: "Cursor",
-    args: ["{prompt}"],
-    icon: "cursor",
-    sdkBackend: "cursor",
-  },
-  codebuddy: {
-    name: "CodeBuddy Code",
+  pi: {
+    name: "Pi",
     args: [],
-    icon: "codebuddy",
-    sdkBackend: "codebuddy",
-  },
-  opencode: {
-    name: "OpenCode",
-    args: [],
-    icon: "opencode",
-    sdkBackend: "opencode",
-  },
-  grok: {
-    name: "Grok Build",
-    args: [],
-    icon: "grok",
-    sdkBackend: "grok",
-  },
-  mimo: {
-    name: "MiMo Code",
-    args: [],
-    icon: "mimo",
-    sdkBackend: "mimo",
+    icon: "terminal",
+    sdkBackend: "pi",
   },
 };
 

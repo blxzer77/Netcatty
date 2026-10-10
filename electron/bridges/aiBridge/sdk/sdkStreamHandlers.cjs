@@ -1052,6 +1052,29 @@ function registerSdkStreamHandlers(ctx) {
         return { status: "unsupported" };
       }
 
+      if (runtime.backendKey === "pi") {
+        const stagedAttachments = [];
+        const steerPrompt = buildSdkTurnPrompt({
+          prompt,
+          replayHistory: false,
+          attachments: payload?.images,
+          toolIntegrationMode: runtime.toolIntegrationMode,
+          onStagedAttachment: (attachment) => stagedAttachments.push(attachment),
+        });
+        mcpServerBridge.updateAttachmentMetadata?.(stagedAttachments, chatSessionId);
+        const piDriver = getDriver("pi");
+        if (typeof piDriver.steerTurn !== "function") return { status: "unsupported" };
+        const result = await piDriver.steerTurn({
+          requestId,
+          chatSessionId,
+          prompt: steerPrompt,
+          attachments: stagedAttachments,
+        });
+        return result.status === "inactive" && sdkActiveStreams.has(requestId)
+          ? { status: "busy" }
+          : result;
+      }
+
       if (runtime?.backendKey !== "codex" || runtime.codexRuntime !== "app-server") {
         return { status: "unsupported" };
       }

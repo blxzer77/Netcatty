@@ -18,8 +18,8 @@ const resolverEnd = source.indexOf("\n  useEffect(() => {", resolverStart);
 assert.ok(lifecycleStart >= 0 && lifecycleEnd > lifecycleStart);
 assert.ok(resolverStart >= 0 && resolverEnd > resolverStart);
 const declarations = source.slice(lifecycleStart, lifecycleEnd) + source.slice(resolverStart, resolverEnd);
-const setters = ["Codex", "Claude", "Copilot", "Cursor", "Codebuddy", "Opencode", "Grok"];
-const bindings = ["useRef", "useEffect", "useCallback", "getBridge", "applyResolvedAgentPath", "cursorApiKeyEncrypted",
+const setters = ["Pi"];
+const bindings = ["useRef", "useEffect", "useCallback", "getBridge", "applyResolvedAgentPath",
   ...setters.map(name => `setIsResolving${name}`)];
 const runHooks = vm.runInNewContext(ts.transpile(`(function(ctx) {
   const { ${bindings.join(",")} } = ctx;
@@ -60,9 +60,9 @@ test("AI detection accepts completed requests after StrictMode effect replay", a
   const h = await mountResolver();
   try {
     let request!: Promise<unknown>;
-    await act(async () => { request = h.state.resolve!("cursor"); });
+    await act(async () => { request = h.state.resolve!("pi"); });
     assert.equal(h.state.busy, true);
-    const result = { installed: true, available: true, cliBinPath: "/fixture/cursor-agent" };
+    const result = { installed: true, available: true, cliBinPath: "/fixture/pi" };
     await act(async () => { h.calls[0].resolve(result); await request; });
     assert.deepEqual(h.applied, [result]);
     assert.equal(h.state.busy, false);
@@ -72,7 +72,7 @@ test("AI detection accepts completed requests after StrictMode effect replay", a
 test("AI detection still ignores completion after real unmount", async () => {
   const h = await mountResolver();
   let request!: Promise<unknown>;
-  await act(async () => { request = h.state.resolve!("cursor"); });
+  await act(async () => { request = h.state.resolve!("pi"); });
   await act(async () => h.root.unmount());
   h.calls[0].resolve({ installed: true });
   await request;
@@ -84,7 +84,7 @@ test("an older AI detection result cannot replace or finish the newer request", 
   try {
     let old!: Promise<unknown>;
     let current!: Promise<unknown>;
-    await act(async () => { old = h.state.resolve!("cursor"); current = h.state.resolve!("cursor"); });
+    await act(async () => { old = h.state.resolve!("pi"); current = h.state.resolve!("pi"); });
     await act(async () => { h.calls[0].resolve({ installed: false }); await old; });
     assert.deepEqual(h.applied, []);
     assert.equal(h.state.busy, true);

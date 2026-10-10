@@ -1,5 +1,5 @@
 import type { ExternalAgentConfig } from "../../infrastructure/ai/types";
-import { getExternalAgentSdkBackend } from "../../infrastructure/ai/managedAgents";
+import { getExternalAgentSdkBackend, isPiAgentConfig } from "../../infrastructure/ai/managedAgents";
 
 export function findEnabledExternalAgent(
   agents: ExternalAgentConfig[],
@@ -9,6 +9,7 @@ export function findEnabledExternalAgent(
     agent.id === agentId &&
     agent.enabled &&
     agent.available !== false &&
+    isPiAgentConfig(agent) &&
     Boolean(getExternalAgentSdkBackend(agent)));
 }
 

@@ -1,9 +1,9 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import type { DiscoveredAgent, ExternalAgentConfig } from '../../infrastructure/ai/types';
-import { getExternalAgentSdkBackend } from '../../infrastructure/ai/managedAgents';
+import { getExternalAgentSdkBackend, isPiAgentConfig } from '../../infrastructure/ai/managedAgents';
 
 interface NetcattyBridge {
-  aiDiscoverAgents(options?: { refreshShellEnv?: boolean; apiKeyPresent?: boolean }): Promise<DiscoveredAgent[]>;
+  aiDiscoverAgents(options?: { refreshShellEnv?: boolean }): Promise<DiscoveredAgent[]>;
 }
 
 function getBridge(): NetcattyBridge | undefined {
@@ -13,11 +13,22 @@ function getBridge(): NetcattyBridge | undefined {
 const AGENT_DISCOVERY_CACHE_TTL_MS = 60_000;
 let agentDiscoveryCache: {
   agents: DiscoveredAgent[];
-  apiKeyPresent: boolean;
   updatedAt: number;
 } | null = null;
 const agentDiscoveryPromises = new Map<string, Promise<DiscoveredAgent[]>>();
 let agentDiscoveryWriteGeneration = 0;
+
+function isPiDiscoveredAgent(agent: DiscoveredAgent): boolean {
+  return isPiAgentConfig({
+    id: `discovered_${agent.command}`,
+    command: agent.command,
+    sdkBackend: agent.sdkBackend,
+  });
+}
+
+function filterPiDiscoveredAgents(agents: DiscoveredAgent[]): DiscoveredAgent[] {
+  return agents.filter(isPiDiscoveredAgent);
+}
 
 export function useAgentDiscovery(
   externalAgents: ExternalAgentConfig[],
@@ -30,7 +41,7 @@ export function useAgentDiscovery(
   const enabled = options?.enabled ?? true;
   const schedule = options?.schedule;
   const [discoveredAgents, setDiscoveredAgents] = useState<DiscoveredAgent[]>(
-    () => agentDiscoveryCache?.agents ?? [],
+    () => filterPiDiscoveredAgents(agentDiscoveryCache?.agents ?? []),
   );
   const [isDiscovering, setIsDiscovering] = useState(false);
   const discoverSeqRef = useRef(0);
@@ -44,10 +55,6 @@ export function useAgentDiscovery(
     discoverSeqRef.current += 1;
   }, []);
 
-  const cursorApiKeyPresent = externalAgents.some(
-    (agent) => agent.id === "discovered_cursor" && Boolean(agent.apiKey),
-  );
-
   const discover = useCallback(async (discoverOptions?: { refreshShellEnv?: boolean }) => {
     if (!enabledRef.current) return;
     const bridge = getBridge();
@@ -56,28 +63,23 @@ export function useAgentDiscovery(
     const forceRefresh = discoverOptions?.refreshShellEnv === true;
     const cacheFresh =
       agentDiscoveryCache
-      && agentDiscoveryCache.apiKeyPresent === cursorApiKeyPresent
       && Date.now() - agentDiscoveryCache.updatedAt < AGENT_DISCOVERY_CACHE_TTL_MS;
 
     if (!forceRefresh && cacheFresh) {
-      startTransition(() => setDiscoveredAgents(agentDiscoveryCache?.agents ?? []));
+      startTransition(() => setDiscoveredAgents(filterPiDiscoveredAgents(agentDiscoveryCache?.agents ?? [])));
       return;
     }
 
     setIsDiscovering(true);
     const discoverSeq = ++discoverSeqRef.current;
     const writeGeneration = ++agentDiscoveryWriteGeneration;
-    const promiseKey = JSON.stringify({
-      apiKeyPresent: cursorApiKeyPresent,
-      refreshShellEnv: forceRefresh,
-    });
+    const promiseKey = JSON.stringify({ refreshShellEnv: forceRefresh });
     try {
       let discoveryPromise = agentDiscoveryPromises.get(promiseKey) ?? null;
       if (!discoveryPromise) {
         const sharedPromise = bridge.aiDiscoverAgents({
           ...discoverOptions,
-          apiKeyPresent: cursorApiKeyPresent,
-        }).finally(() => {
+        }).then(filterPiDiscoveredAgents).finally(() => {
           if (agentDiscoveryPromises.get(promiseKey) === sharedPromise) {
             agentDiscoveryPromises.delete(promiseKey);
           }
@@ -92,12 +94,9 @@ export function useAgentDiscovery(
         || discoverSeq !== discoverSeqRef.current
         || writeGeneration !== agentDiscoveryWriteGeneration
       ) return;
-      agentDiscoveryCache = {
-        agents,
-        apiKeyPresent: cursorApiKeyPresent,
-        updatedAt: Date.now(),
-      };
-      startTransition(() => setDiscoveredAgents(agents));
+      const supportedAgents = filterPiDiscoveredAgents(agents);
+      agentDiscoveryCache = { agents: supportedAgents, updatedAt: Date.now() };
+      startTransition(() => setDiscoveredAgents(supportedAgents));
     } catch (err) {
       console.error('Agent discovery failed:', err);
     } finally {
@@ -105,14 +104,14 @@ export function useAgentDiscovery(
         setIsDiscovering(false);
       }
     }
-  }, [cursorApiKeyPresent]);
+  }, []);
 
   useEffect(() => {
     discoverSeqRef.current += 1;
     if (!enabled) {
       setIsDiscovering(false);
     }
-  }, [cursorApiKeyPresent, enabled]);
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -154,6 +153,7 @@ export function useAgentDiscovery(
     setExternalAgents((prev) => {
       let changed = false;
       const next = prev.map((ea) => {
+        if (!isPiAgentConfig(ea)) return ea;
         // Only update agents that were auto-discovered (id starts with "discovered_")
         if (!ea.id.startsWith('discovered_')) return ea;
 
@@ -169,20 +169,9 @@ export function useAgentDiscovery(
         const backendChanged = getExternalAgentSdkBackend(ea) !== backend
           || Boolean(ea.acpCommand)
           || JSON.stringify(ea.acpArgs || []) !== JSON.stringify([]);
-        const matchPath = match.binPath || match.path;
-        const env = match.command === 'claude'
-          ? { ...(ea.env ?? {}), CLAUDE_CODE_EXECUTABLE: matchPath }
-          : match.command === 'opencode'
-            ? { ...(ea.env ?? {}), OPENCODE_BIN: matchPath }
-            : match.command === 'mimo'
-              ? { ...(ea.env ?? {}), MIMOCODE_BIN: matchPath }
-              : ea.env;
-        const envChanged =
-          (match.command === 'claude' && ea.env?.CLAUDE_CODE_EXECUTABLE !== matchPath)
-          || (match.command === 'opencode' && ea.env?.OPENCODE_BIN !== matchPath)
-          || (match.command === 'mimo' && ea.env?.MIMOCODE_BIN !== matchPath);
+        const env = ea.env;
         const versionChanged = Boolean(match.version) && ea.cliVersion !== match.version;
-        if (currentArgs !== newArgs || backendChanged || envChanged || versionChanged) {
+        if (currentArgs !== newArgs || backendChanged || versionChanged) {
           changed = true;
           const { acpCommand: _legacyCommand, acpArgs: _legacyArgs, ...rest } = ea;
           return {
@@ -201,8 +190,9 @@ export function useAgentDiscovery(
 
   // Filter out agents that are already configured as external agents
   const unconfiguredAgents = discoveredAgents.filter(
-    (da) => !externalAgents.some(
-      (ea) => ea.command === da.command || ea.command === da.path,
+    (da) => isPiDiscoveredAgent(da) && !externalAgents.some(
+      (ea) => isPiAgentConfig(ea)
+        && (ea.command === da.command || ea.command === da.path || ea.id === `discovered_${da.command}`),
     ),
   );
 
@@ -217,15 +207,11 @@ export function useAgentDiscovery(
         args: agent.args,
         icon: agent.icon,
         enabled: true,
+        available: agent.available,
         sdkBackend: backend,
+        commandSource: 'auto',
         ...(agent.version ? { cliVersion: agent.version } : {}),
-        ...(agent.command === 'claude'
-          ? { env: { CLAUDE_CODE_EXECUTABLE: agent.binPath || agent.path || '' } }
-          : agent.command === 'opencode'
-            ? { env: { OPENCODE_BIN: agent.binPath || agent.path || '' } }
-            : agent.command === 'mimo'
-              ? { env: { MIMOCODE_BIN: agent.binPath || agent.path || '' } }
-              : {}),
+        // Pi resolves its executable directly and does not need a managed env var.
       };
     },
     [],

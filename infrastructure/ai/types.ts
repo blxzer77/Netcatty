@@ -281,7 +281,7 @@ export interface ExternalAgentConfig {
   icon?: string;
   enabled: boolean;
   available?: boolean;
-  /** SDK backend key for managed agents (claude|codex|copilot|cursor|codebuddy|opencode|grok|mimo). */
+  /** SDK backend key for managed agents (claude|codex|copilot|cursor|codebuddy|opencode|grok|mimo|pi). */
   sdkBackend?: string;
   /** Cursor only: mutually exclusive auth — API key vs local `cursor-agent` CLI login. */
   cursorAuthMode?: CursorAuthMode;
@@ -347,8 +347,8 @@ export interface DiscoveredAgent {
   /** @deprecated Legacy discovery field from the pre-SDK migration. */
   acpCommand?: string;
   acpArgs?: string[];
-  /** SDK backend key (claude|codex|copilot|cursor|codebuddy|opencode|grok|mimo) — the routing value. */
-  sdkBackend?: 'claude' | 'codex' | 'copilot' | 'cursor' | 'codebuddy' | 'opencode' | 'grok' | 'mimo';
+  /** SDK backend key (claude|codex|copilot|cursor|codebuddy|opencode|grok|mimo|pi) — the routing value. */
+  sdkBackend?: 'claude' | 'codex' | 'copilot' | 'cursor' | 'codebuddy' | 'opencode' | 'grok' | 'mimo' | 'pi';
   /** Absolute resolved CLI path (preferred over `path`). */
   binPath?: string;
   installed?: boolean;
@@ -846,6 +846,12 @@ export const MIMO_MODEL_PRESETS: AgentModelPreset[] = [
   { id: 'xiaomi/mimo-v2.6-flash', name: 'MiMo V2.6 Flash' },
 ];
 
+// Pi loads its model catalog from the user's configured providers. Keep the
+// fallback empty so Netcatty never guesses a provider/model that is unavailable
+// in the local Pi installation; the live catalog (or a manually entered model)
+// remains authoritative.
+export const PI_MODEL_PRESETS: AgentModelPreset[] = [];
+
 // Curated Grok Build models when `grok models` is unavailable. IDs mirror the
 // public Grok Build / xAI coding agent lineup; live discovery still overrides.
 export const GROK_MODEL_PRESETS: AgentModelPreset[] = [
@@ -891,6 +897,7 @@ export function getAgentModelPresets(
   if (backend === 'opencode') return OPENCODE_MODEL_PRESETS;
   if (backend === 'grok') return GROK_MODEL_PRESETS;
   if (backend === 'mimo') return MIMO_MODEL_PRESETS;
+  if (backend === 'pi') return PI_MODEL_PRESETS;
 
   if (!agentCommand) return [];
   // Split on both POSIX (/) and Windows (\) separators so command paths like
@@ -911,6 +918,7 @@ export function getAgentModelPresets(
   if (basename.startsWith('opencode')) return OPENCODE_MODEL_PRESETS;
   if (basename.startsWith('grok')) return GROK_MODEL_PRESETS;
   if (basename.startsWith('mimo')) return MIMO_MODEL_PRESETS;
+  if (basename.startsWith('pi')) return PI_MODEL_PRESETS;
   return [];
 }
 

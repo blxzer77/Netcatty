@@ -41,12 +41,12 @@ module.exports = {
     //     making the app icon look smaller than other apps in taskbar /
     //     Start menu / desktop shortcuts.
     icon: 'public/icon.png',
-    // npmRebuild must stay enabled for macOS and Windows builds — without it,
-    // node-pty's native module is not recompiled for the Electron ABI, causing
-    // "posix_spawnp failed" on macOS. Linux builds set npm_config_arch in CI
-    // and run ensure-node-pty-linux.sh before packaging, so the rebuild is
-    // redundant but harmless there.
-    npmRebuild: true,
+    // Native modules are handled explicitly: node-pty is rebuilt in afterPack
+    // after its ConPTY patch is applied, while serialport ships an N-API
+    // prebuild. Keeping electron-builder's broad npm rebuild disabled avoids
+    // rebuilding optional agent SDKs (including sqlite3) that are not part of
+    // the Catty/Pi runtime and would otherwise require extra toolchains.
+    npmRebuild: false,
     directories: {
         buildResources: 'build',
         output: 'release'

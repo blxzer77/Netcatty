@@ -86,6 +86,7 @@ import {
   retargetWorkspaceActiveChatAfterMemberLoss,
   seedWorkspaceAIActiveSessionFromMembers,
 } from '../../domain/workspaceAiScopeHandoff';
+import { filterSupportedExternalAgents } from '../../infrastructure/ai/managedAgents';
 
 function providerPatchIsNoop(
   current: ProviderConfig,
@@ -106,6 +107,17 @@ function providerPatchIsNoop(
     return false;
   }
   return true;
+}
+
+function readSupportedExternalAgents(): ExternalAgentConfig[] {
+  const stored = localStorageAdapter.read<ExternalAgentConfig[]>(STORAGE_KEY_AI_EXTERNAL_AGENTS);
+  return filterSupportedExternalAgents(Array.isArray(stored) ? stored : []);
+}
+
+function normalizeDefaultAgentId(id: string | null | undefined, agents: ExternalAgentConfig[]): string {
+  const candidate = String(id || '').trim();
+  if (candidate === 'catty' || agents.some((agent) => agent.id === candidate)) return candidate || 'catty';
+  return 'catty';
 }
 
 export function useAIState() {
@@ -135,11 +147,14 @@ export function useAIState() {
   );
 
   // ── External Agents ──
-  const [externalAgents, setExternalAgentsRaw] = useState<ExternalAgentConfig[]>(() =>
-    localStorageAdapter.read<ExternalAgentConfig[]>(STORAGE_KEY_AI_EXTERNAL_AGENTS) ?? []
-  );
+  const [externalAgents, setExternalAgentsRaw] = useState<ExternalAgentConfig[]>(() => {
+    const stored = localStorageAdapter.read<ExternalAgentConfig[]>(STORAGE_KEY_AI_EXTERNAL_AGENTS) ?? [];
+    const supported = filterSupportedExternalAgents(stored);
+    if (supported.length !== stored.length) localStorageAdapter.write(STORAGE_KEY_AI_EXTERNAL_AGENTS, supported);
+    return supported;
+  });
   const [defaultAgentId, setDefaultAgentIdRaw] = useState<string>(() =>
-    localStorageAdapter.readString(STORAGE_KEY_AI_DEFAULT_AGENT) ?? 'catty'
+    normalizeDefaultAgentId(localStorageAdapter.readString(STORAGE_KEY_AI_DEFAULT_AGENT), readSupportedExternalAgents())
   );
 
   // ── Safety Settings ──
@@ -411,16 +426,24 @@ export function useAIState() {
 
   const setExternalAgents = useCallback((value: ExternalAgentConfig[] | ((prev: ExternalAgentConfig[]) => ExternalAgentConfig[])) => {
     setExternalAgentsRaw(prev => {
-      const next = typeof value === 'function' ? value(prev) : value;
+      const next = filterSupportedExternalAgents(typeof value === 'function' ? value(prev) : value);
       localStorageAdapter.write(STORAGE_KEY_AI_EXTERNAL_AGENTS, next);
       return next;
     });
   }, []);
 
   const setDefaultAgentId = useCallback((id: string) => {
-    setDefaultAgentIdRaw(id);
-    localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, id);
-  }, []);
+    const next = normalizeDefaultAgentId(id, externalAgents);
+    setDefaultAgentIdRaw(next);
+    localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, next);
+  }, [externalAgents]);
+
+  useEffect(() => {
+    const next = normalizeDefaultAgentId(defaultAgentId, externalAgents);
+    if (next === defaultAgentId) return;
+    setDefaultAgentIdRaw(next);
+    localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, next);
+  }, [defaultAgentId, externalAgents]);
 
   const setCommandBlocklist = useCallback((value: string[]) => {
     setCommandBlocklistRaw(value);
@@ -497,11 +520,11 @@ export function useAIState() {
               console.warn('[useAIState] Cross-window sync: AI_EXTERNAL_AGENTS is not an array, skipping');
               break;
             }
-            setExternalAgentsRaw(agents ?? []);
+            setExternalAgentsRaw(filterSupportedExternalAgents(agents ?? []));
             break;
           }
           case STORAGE_KEY_AI_DEFAULT_AGENT:
-            setDefaultAgentIdRaw(localStorageAdapter.readString(STORAGE_KEY_AI_DEFAULT_AGENT) ?? 'catty');
+            setDefaultAgentIdRaw(normalizeDefaultAgentId(localStorageAdapter.readString(STORAGE_KEY_AI_DEFAULT_AGENT), externalAgents));
             break;
           case STORAGE_KEY_AI_COMMAND_BLOCKLIST: {
             const blocklist = readCommandBlocklistSetting();
@@ -618,7 +641,7 @@ export function useAIState() {
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener(AI_STATE_CHANGED_EVENT, handleLocalStateChanged);
     };
-  }, []);
+  }, [externalAgents]);
 
   // ── Sync initial safety settings to MCP Server on mount ──
   useEffect(() => {

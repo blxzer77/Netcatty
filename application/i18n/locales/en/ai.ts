@@ -301,6 +301,18 @@ export const enAiMessages: Messages = {
   'ai.mimo.check': 'Check',
   'ai.mimo.resetPath': 'Reset',
 
+  // AI Pi coding agent
+  'ai.pi.title': 'Pi',
+  'ai.pi.description': 'Uses the Pi coding agent CLI. Configure providers and credentials in Pi, then select it as an external coding agent.',
+  'ai.pi.detecting': 'Detecting...',
+  'ai.pi.detected': 'Detected',
+  'ai.pi.notFound': 'Not found',
+  'ai.pi.path': 'Path:',
+  'ai.pi.notFoundHint': 'Could not find pi in PATH. Install Pi or specify the executable path below.',
+  'ai.pi.customPathPlaceholder': 'e.g. /usr/local/bin/pi',
+  'ai.pi.check': 'Check',
+  'ai.pi.resetPath': 'Reset',
+
   // AI Grok Build (in-app managed agent — distinct from External MCP client install)
   'ai.grok.title': 'Grok Build',
   'ai.grok.description': "xAI's Grok Build coding agent CLI. Install the Grok CLI, sign in with `grok login` or set XAI_API_KEY, then select it as an external agent.",

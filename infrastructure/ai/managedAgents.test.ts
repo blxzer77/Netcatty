@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getExternalAgentSdkBackend, matchesManagedAgentConfig } from './managedAgents';
+import {
+  filterSupportedExternalAgents,
+  getExternalAgentSdkBackend,
+  isPiAgentConfig,
+  matchesManagedAgentConfig,
+} from './managedAgents';
+
+test('Pi support accepts discovered, SDK-backed, and Windows shim configurations', () => {
+  assert.equal(isPiAgentConfig({ id: 'discovered_pi', command: '/opt/pi', sdkBackend: undefined }), true);
+  assert.equal(isPiAgentConfig({ id: 'custom', command: 'pi.cmd', sdkBackend: undefined }), true);
+  assert.equal(isPiAgentConfig({ id: 'custom', command: '/opt/pi', sdkBackend: 'pi' }), true);
+  assert.equal(isPiAgentConfig({ id: 'custom', command: 'codex', sdkBackend: 'codex' }), false);
+});
+
+test('Pi product filter drops stale external-agent configurations', () => {
+  const agents = filterSupportedExternalAgents([
+    { id: 'discovered_pi', name: 'Pi', command: 'pi', enabled: true, sdkBackend: 'pi' },
+    { id: 'discovered_codex', name: 'Codex', command: 'codex', enabled: true, sdkBackend: 'codex' },
+  ]);
+  assert.deepEqual(agents.map((agent) => agent.id), ['discovered_pi']);
+});
 
 test('managed Claude matching ignores legacy adapter command-only configs', () => {
   assert.equal(

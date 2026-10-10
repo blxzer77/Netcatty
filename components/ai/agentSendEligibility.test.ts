@@ -6,6 +6,13 @@ import type { ExternalAgentConfig } from '../../infrastructure/ai/types';
 
 const agents: ExternalAgentConfig[] = [
   {
+    id: 'pi-agent',
+    name: 'Pi Agent',
+    command: '/usr/local/bin/pi',
+    sdkBackend: 'pi',
+    enabled: true,
+  },
+  {
     id: 'enabled-agent',
     name: 'Enabled Agent',
     command: '/usr/local/bin/enabled-agent',
@@ -35,9 +42,10 @@ const agents: ExternalAgentConfig[] = [
   },
 ];
 
-test('canSendWithAgent allows Catty and enabled external agents', () => {
+test('canSendWithAgent allows Catty and enabled Pi agents', () => {
   assert.equal(canSendWithAgent('catty', agents), true);
-  assert.equal(canSendWithAgent('enabled-agent', agents), true);
+  assert.equal(canSendWithAgent('pi-agent', agents), true);
+  assert.equal(canSendWithAgent('enabled-agent', agents), false);
 });
 
 test('canSendWithAgent blocks missing or disabled external agents', () => {
@@ -47,7 +55,8 @@ test('canSendWithAgent blocks missing or disabled external agents', () => {
   assert.equal(canSendWithAgent('missing-agent', agents), false);
 });
 
-test('findEnabledExternalAgent ignores disabled external agents', () => {
-  assert.equal(findEnabledExternalAgent(agents, 'enabled-agent')?.name, 'Enabled Agent');
+test('findEnabledExternalAgent only returns enabled Pi agents', () => {
+  assert.equal(findEnabledExternalAgent(agents, 'pi-agent')?.name, 'Pi Agent');
+  assert.equal(findEnabledExternalAgent(agents, 'enabled-agent'), undefined);
   assert.equal(findEnabledExternalAgent(agents, 'disabled-agent'), undefined);
 });

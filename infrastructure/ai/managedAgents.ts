@@ -3,7 +3,7 @@ import { getCommandBasename, isPathLikeCommand } from './shared/pathLikeCommand'
 
 export { isPathLikeCommand, getCommandBasename };
 
-export type ManagedAgentKey = 'codex' | 'claude' | 'copilot' | 'cursor' | 'codebuddy' | 'opencode' | 'grok' | 'mimo';
+export type ManagedAgentKey = 'codex' | 'claude' | 'copilot' | 'cursor' | 'codebuddy' | 'opencode' | 'grok' | 'mimo' | 'pi';
 
 const MANAGED_AGENT_META: Record<ManagedAgentKey, { commandNames: string[]; sdkBackend: string }> = {
   codex: { commandNames: ['codex'], sdkBackend: 'codex' },
@@ -14,6 +14,7 @@ const MANAGED_AGENT_META: Record<ManagedAgentKey, { commandNames: string[]; sdkB
   opencode: { commandNames: ['opencode'], sdkBackend: 'opencode' },
   grok: { commandNames: ['grok'], sdkBackend: 'grok' },
   mimo: { commandNames: ['mimo'], sdkBackend: 'mimo' },
+  pi: { commandNames: ['pi'], sdkBackend: 'pi' },
 };
 
 function matchesPrimaryCliBasename(command: string | undefined, agentKey: ManagedAgentKey): boolean {
@@ -31,7 +32,8 @@ export function isSettingsManagedDiscoveredAgent(
     || agent.command === 'codebuddy'
     || agent.command === 'opencode'
     || agent.command === 'grok'
-    || agent.command === 'mimo';
+    || agent.command === 'mimo'
+    || agent.command === 'pi';
 }
 
 export function matchesManagedAgentConfig(
@@ -58,6 +60,26 @@ export function getExternalAgentSdkBackend(
   agent: Pick<ExternalAgentConfig, 'sdkBackend' | 'acpCommand'> | undefined,
 ): string | undefined {
   return agent?.sdkBackend || agent?.acpCommand || undefined;
+}
+
+/**
+ * Netcatty's Pi-only product surface accepts only the Pi managed agent.
+ * Keep this predicate in the shared managed-agent layer so stale configs from
+ * older builds cannot leak into selectors or default-agent settings.
+ */
+export function isPiAgentConfig(
+  agent: Pick<ExternalAgentConfig, 'id' | 'command' | 'sdkBackend'> | undefined,
+): boolean {
+  if (!agent) return false;
+  if (agent.id === 'discovered_pi' || agent.sdkBackend === 'pi') return true;
+  const basename = getCommandBasename(agent.command);
+  return basename === 'pi' || basename.startsWith('pi.');
+}
+
+export function filterSupportedExternalAgents(
+  agents: ExternalAgentConfig[],
+): ExternalAgentConfig[] {
+  return agents.filter((agent) => isPiAgentConfig(agent));
 }
 
 export function getManagedAgentStoredPath(

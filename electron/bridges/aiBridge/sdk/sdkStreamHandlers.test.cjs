@@ -77,12 +77,13 @@ test("sdk-agent:cleanup aborts and removes request entries for the target chat o
   });
 });
 
-test("resolveBackendKey maps backend command/value to registry key", () => {
-  assert.equal(resolveBackendKey("claude"), "claude");
-  assert.equal(resolveBackendKey("codex"), "codex");
-  assert.equal(resolveBackendKey("copilot"), "copilot");
-  assert.equal(resolveBackendKey("codebuddy"), "codebuddy");
-  assert.equal(resolveBackendKey("opencode"), "opencode");
+test("resolveBackendKey accepts only Pi", () => {
+  assert.equal(resolveBackendKey("pi"), "pi");
+  assert.equal(resolveBackendKey("claude"), null);
+  assert.equal(resolveBackendKey("codex"), null);
+  assert.equal(resolveBackendKey("copilot"), null);
+  assert.equal(resolveBackendKey("codebuddy"), null);
+  assert.equal(resolveBackendKey("opencode"), null);
 });
 
 test("resolveBackendKey returns null for unknown", () => {
@@ -1014,56 +1015,4 @@ test("resolveSdkBackendBinPath does not fall back to Windows shell shims for non
     resolveSdkBinPath: () => null,
   });
   assert.equal(out, undefined);
-});
-
-
-test("OpenCode catalog IPC allows cold startup past 10s and still aborts a stalled load", async (t) => {
-  const { getDriver } = require("./index.cjs");
-  const { OPENCODE_SERVER_START_TIMEOUT_MS } = require("./opencodeDriver.cjs");
-  const { handlers } = registerWithStubbedCtx({
-    getShellEnv: async () => ({}),
-    normalizeAgentEnv: (env) => env || {},
-    withCliDiscoveryEnv: (env) => env,
-    normalizeClaudeCodeExecutableEnvForSdk: (env) => env,
-    resolveCliFromPath: () => undefined,
-    normalizeCliPathForPlatform: (value) => value,
-    resolveSdkBinPath: () => undefined,
-    resolveClaudeCodeExecutableForSdk: undefined,
-    resolveCodexExecutableForSdk: undefined,
-    resolveCodebuddyExecutableForSdk: undefined,
-  });
-  const listModels = handlers.get("netcatty:ai:sdk-agent:list-models");
-  const catalog = { models: [{ id: "test/cold-start" }], currentModelId: "test/cold-start" };
-  let signal;
-  let complete;
-  let started;
-  let entered = new Promise((resolve) => { started = resolve; });
-  t.mock.method(getDriver("opencode"), "listModels", ({ abortController }) => {
-    signal = abortController.signal;
-    started();
-    return new Promise((resolve) => { complete = resolve; });
-  });
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-
-  const slow = listModels({ sender: {} }, { sdkBackend: "opencode", agentCommand: "/test/cold-start" });
-  await entered;
-  t.mock.timers.tick(10001);
-  assert.equal(signal.aborted, false, "the old outer 10s deadline must not cancel OpenCode startup");
-  complete(catalog);
-  assert.deepEqual(await slow, { ok: true, ...catalog });
-
-  entered = new Promise((resolve) => { started = resolve; });
-  const stalled = listModels({ sender: {} }, { sdkBackend: "opencode", agentCommand: "/test/stalled-start" });
-  await entered;
-  t.mock.timers.tick(OPENCODE_SERVER_START_TIMEOUT_MS + 10000);
-  const result = await stalled;
-  assert.equal(signal.aborted, true, "the bounded catalog deadline must abort the driver");
-  assert.match(result.warning, /list-models timed out/);
-  assert.deepEqual(result.models, []);
-  // A timeout must leave neither an in-flight entry nor a cached failure.
-  entered = new Promise((resolve) => { started = resolve; });
-  const retried = listModels({ sender: {} }, { sdkBackend: "opencode", agentCommand: "/test/stalled-start" });
-  await entered;
-  complete(catalog);
-  assert.deepEqual(await retried, { ok: true, ...catalog });
 });

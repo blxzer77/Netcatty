@@ -267,6 +267,18 @@ export const ruAiMessages: Messages = {
   'ai.grok.runtime.streamingJson.hint':
     'Режим headless streaming-json (grok -p --output-format streaming-json). MCP внедряется через .grok/config.toml проекта.',
 
+  // AI Pi
+  'ai.pi.title': 'Pi',
+  'ai.pi.description': 'CLI агента программирования Pi. Настройте провайдеров и учетные данные в Pi, затем выберите его как внешнего агента.',
+  'ai.pi.detecting': 'Обнаружение...',
+  'ai.pi.detected': 'Обнаружен',
+  'ai.pi.notFound': 'Не найден',
+  'ai.pi.path': 'Путь:',
+  'ai.pi.notFoundHint': 'Не удалось найти pi в PATH. Установите Pi или укажите путь к исполняемому файлу ниже.',
+  'ai.pi.customPathPlaceholder': 'например, /usr/local/bin/pi',
+  'ai.pi.check': 'Проверить',
+  'ai.pi.resetPath': 'Сбросить',
+
   // AI Default Agent
   'ai.defaultAgent': 'Агент по умолчанию',
   'ai.defaultAgent.description': 'Агент, который будет использоваться при запуске новой AI-сессии',

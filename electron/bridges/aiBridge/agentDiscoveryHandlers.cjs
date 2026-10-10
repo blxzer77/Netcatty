@@ -93,22 +93,8 @@ function registerAgentDiscoveryHandlers(ctx) {
     }
     const agents = [];
     const knownAgents = [
-      { command: "claude", name: "Claude Code", icon: "claude",
-        description: "Anthropic's agentic coding assistant", sdkBackend: "claude", args: [] },
-      { command: "codex", name: "Codex CLI", icon: "openai",
-        description: "OpenAI's coding agent", sdkBackend: "codex", args: [] },
-      { command: "copilot", name: "GitHub Copilot CLI", icon: "copilot",
-        description: "GitHub's coding agent CLI", sdkBackend: "copilot", args: [] },
-      { command: "cursor", name: "Cursor", icon: "cursor",
-        description: "Cursor's coding agent via Cursor SDK", sdkBackend: "cursor", args: [] },
-      { command: "codebuddy", name: "CodeBuddy Code", icon: "codebuddy",
-        description: "Tencent's coding agent CLI (Agent SDK)", sdkBackend: "codebuddy", args: [] },
-      { command: "opencode", name: "OpenCode", icon: "opencode",
-        description: "Open source coding agent via the official OpenCode SDK", sdkBackend: "opencode", args: [] },
-      { command: "grok", name: "Grok Build", icon: "grok",
-        description: "xAI's Grok Build coding agent CLI", sdkBackend: "grok", args: [] },
-      { command: "mimo", name: "MiMo Code", icon: "mimo",
-        description: "Xiaomi's MiMo Code CLI, an OpenCode fork", sdkBackend: "mimo", args: [] },
+      { command: "pi", name: "Pi", icon: "pi",
+        description: "Pi coding agent CLI", sdkBackend: "pi", args: [] },
     ];
 
     const shellEnv = await getShellEnv();

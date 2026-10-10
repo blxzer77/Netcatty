@@ -21,7 +21,7 @@ import {
   resolveAgentCliVersion,
   resolveAgentModelSelection,
 } from '../infrastructure/ai/types';
-import { getExternalAgentSdkBackend, getManualAgentCommand, matchesManagedAgentConfig } from '../infrastructure/ai/managedAgents';
+import { getExternalAgentSdkBackend, getManualAgentCommand, isPiAgentConfig, matchesManagedAgentConfig } from '../infrastructure/ai/managedAgents';
 import {
   appendComposerCustomModelPresets,
   resolveComposerCustomModelIds,
@@ -422,7 +422,15 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
   const activeSessionId = normalizedPanelView.mode === 'session' ? normalizedPanelView.sessionId : null;
   const isStreaming = activeSessionId ? streamingSessionIds.has(activeSessionId) : false;
   const isSteering = activeSessionId != null && steeringSessionId === activeSessionId;
-  const currentAgentId = activeSession?.agentId ?? currentDraft?.agentId ?? defaultAgentId;
+  const fallbackAgentId = defaultAgentId === 'catty'
+    || externalAgents.some((agent) => agent.id === defaultAgentId && isPiAgentConfig(agent))
+    ? defaultAgentId
+    : 'catty';
+  const storedCurrentAgentId = activeSession?.agentId ?? currentDraft?.agentId ?? defaultAgentId;
+  const currentAgentId = storedCurrentAgentId === 'catty'
+    || externalAgents.some((agent) => agent.id === storedCurrentAgentId && isPiAgentConfig(agent))
+    ? storedCurrentAgentId
+    : fallbackAgentId;
   const observedContextUsage = useAgentContextUsage(activeSessionId);
   const inputValue = pendingComposerTextRef.current ?? currentDraft?.text ?? '';
   const files = currentDraft?.attachments ?? [];
@@ -847,7 +855,9 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
   const modelDisplayName = effectiveActiveModelId || effectiveActiveProvider?.defaultModel || '';
 
   const currentAgentConfig = useMemo(
-    () => currentAgentId !== 'catty' ? externalAgents.find(a => a.id === currentAgentId) : undefined,
+    () => currentAgentId !== 'catty'
+      ? externalAgents.find((agent) => agent.id === currentAgentId && isPiAgentConfig(agent))
+      : undefined,
     [currentAgentId, externalAgents],
   );
   const isCodexManagedAgent = useMemo(
@@ -1321,7 +1331,11 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
       (attachment) => isVaultNoteAttachment(attachment) && attachment.vaultNoteTitle,
     )?.vaultNoteTitle ?? '';
     const titleText = trimmed || noteOnlyTitle.trim();
-    const sendAgentId = currentSessionView?.agentId ?? draft?.agentId ?? currentAgentId;
+    const storedSendAgentId = currentSessionView?.agentId ?? draft?.agentId ?? currentAgentId;
+    const sendAgentId = storedSendAgentId === 'catty'
+      || externalAgents.some((agent) => agent.id === storedSendAgentId && isPiAgentConfig(agent))
+      ? storedSendAgentId
+      : fallbackAgentId;
     const agentConfig = sendAgentId !== 'catty' ? findEnabledExternalAgent(externalAgents, sendAgentId) : undefined;
     if (sendAgentId !== 'catty' && !agentConfig) return;
 
@@ -1546,7 +1560,7 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
     }
   }, [
     validateNoteMentions, loadCodexConfigModel,
-    isStreaming, activeProvider, effectiveActiveProvider, effectiveActiveModelId, selectedCattyThinking, scopeKey, currentAgentId,
+    isStreaming, activeProvider, effectiveActiveProvider, effectiveActiveModelId, selectedCattyThinking, scopeKey, currentAgentId, fallbackAgentId,
     activeModelId, externalAgents,
     createSession, addMessageToSession, updateMessageById, updateLastMessage,
     setStreamingForScope,
