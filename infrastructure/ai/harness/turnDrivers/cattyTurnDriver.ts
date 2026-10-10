@@ -31,7 +31,7 @@ import {
 } from '../cattyRuntime';
 import { computeTotalInputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../contextBudget';
 import { clearChatSessionCancelled } from '../agentStop';
-import { clearApprovedPlans } from '../shared/planGate';
+import { clearApprovedPlans } from '../../shared/planGate';
 import { isRequestTooLargeError } from '../../errorClassifier';
 import { getNetcattyBridge, generateId, resolveUserSkillsContext } from '../../aiChatStreamingSupport';
 import {
