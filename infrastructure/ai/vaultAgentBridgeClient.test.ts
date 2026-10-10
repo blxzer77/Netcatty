@@ -1865,6 +1865,32 @@ describe('handleVaultAgentOp vault management gaps', () => {
     assert.equal(forwardedKnownHosts, knownHosts);
   });
 
+  it('rejects a forwarding start when the approved host does not own the rule', async () => {
+    const rule: PortForwardingRule = {
+      id: 'rule-1', label: 'Web', type: 'local', localPort: 8080,
+      bindAddress: '127.0.0.1', remoteHost: '127.0.0.1', remotePort: 80,
+      hostId: host.id, status: 'inactive', createdAt: 1,
+    };
+    let startCalls = 0;
+    const deps = createDeps({
+      hosts: [host],
+      portForwardingRules: [rule],
+      startTunnel: async () => {
+        startCalls += 1;
+        return { success: true };
+      },
+    });
+
+    const result = await handleVaultAgentOp('portforward.start', {
+      ruleId: rule.id,
+      hostId: 'host-b',
+    }, deps);
+
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /different host/i);
+    assert.equal(startCalls, 0);
+  });
+
   it('does not start a forwarding rule whose host was changed to serial', async () => {
     const serialHost: Host = { ...host, protocol: 'serial' };
     const rule: PortForwardingRule = {
@@ -1923,6 +1949,32 @@ describe('handleVaultAgentOp vault management gaps', () => {
     }
     assert.equal(startCalls, 0);
     assert.deepEqual(deps.getPortForwardingRules(), [rule]);
+  });
+
+  it('rejects a forwarding stop when the approved host does not own the rule', async () => {
+    const rule: PortForwardingRule = {
+      id: 'rule-1', label: 'Web', type: 'local', localPort: 8080,
+      bindAddress: '127.0.0.1', remoteHost: '127.0.0.1', remotePort: 80,
+      hostId: host.id, status: 'active', createdAt: 1,
+    };
+    let stopCalls = 0;
+    const deps = createDeps({
+      hosts: [host],
+      portForwardingRules: [rule],
+      stopRuleTunnels: async () => {
+        stopCalls += 1;
+        return { success: true };
+      },
+    });
+
+    const result = await handleVaultAgentOp('portforward.stop', {
+      ruleId: rule.id,
+      hostId: 'host-b',
+    }, deps);
+
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /different host/i);
+    assert.equal(stopCalls, 0);
   });
 
   it('persists an inactive status after stopping a forwarding rule', async () => {
