@@ -156,7 +156,7 @@ const VAULT_CAPABILITIES = [
       requiresChatSession: false,
       bypassesObserverBlock: false,
       bypassesApproval: true,
-      bypassesChatCancel: true,
+      bypassesChatCancel: false,
     },
     surfaces: {
       cli: { command: ["vault", "host-notes", "get"] },

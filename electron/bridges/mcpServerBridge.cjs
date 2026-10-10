@@ -1604,6 +1604,8 @@ const dispatchCapabilityRpc = createCapabilityRpcDispatcher({
   getApprovalTarget,
   hasSessionApproval: (socket) => Boolean(socket && sessionApprovedExternalSockets.has(socket)),
   USER_DENIED_MESSAGE,
+  getScopedSessionIds,
+  getSessionMeta,
   listPortForwards: () => listActivePortForwards(),
   sessionService,
   captureHostOpenScope: (chatSessionId) => ({

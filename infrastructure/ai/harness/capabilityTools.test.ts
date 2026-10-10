@@ -984,6 +984,17 @@ describe('capabilityTools submit_plan', () => {
     assert.match(result.error, /not connected in the current scope/);
   });
 
+  it('rejects direct host note writes outside the current scope', async () => {
+    const { tools, toolsContext } = planTools('auto', 'chat-direct-scope');
+    const result = await withCattyToolContext(
+      tools.host_notes_set,
+      toolsContext.host_notes_set,
+      'notes-outside-scope',
+    ).execute({ hostId: 'host-not-in-scope', notes: 'should not be read or written' }) as { error: string };
+
+    assert.match(result.error, /not connected in the current Catty scope/);
+  });
+
   it('merges and sanitizes the machine record on host notes writes', async () => {
     let written: Record<string, unknown> | undefined;
     const { tools, toolsContext } = createCattyToolsFromCatalog(
@@ -996,7 +1007,7 @@ describe('capabilityTools submit_plan', () => {
           return { ok: true, hostId: 'host-1', notes: String(params.notes ?? '') };
         },
       },
-      { sessions: [] },
+      { sessions: [{ sessionId: 'session-1', hostId: 'host-1', hostname: 'host.example', label: 'host', connected: true }] },
       [],
       'auto',
       undefined,
@@ -1028,7 +1039,7 @@ describe('capabilityTools submit_plan', () => {
           notes: 'deploy key API_TOKEN=tok_live_1234567890 kept for the backup job',
         }),
       },
-      { sessions: [] },
+      { sessions: [{ sessionId: 'session-1', hostId: 'host-1', hostname: 'host.example', label: 'host', connected: true }] },
       [],
       'confirm',
       undefined,

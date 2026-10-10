@@ -184,6 +184,15 @@ export interface ProposePlanInput {
  */
 export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
   const planId = input.planId ?? nextPlanEventId('plan');
+  const unverifiedPrecondition = input.preconditions?.find(
+    precondition => precondition.ok !== true || precondition.verified !== true,
+  );
+  if (unverifiedPrecondition) {
+    return Promise.resolve({
+      outcome: 'denied',
+      note: `Precondition "${unverifiedPrecondition.label}" is not harness-verified.`,
+    });
+  }
   if (isConsumedPlanId(planId)) {
     return Promise.resolve({
       outcome: 'denied',

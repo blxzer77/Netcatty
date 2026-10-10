@@ -86,6 +86,8 @@ function createCapabilityRpcDispatcher(deps) {
     isChatSessionCancelled,
     requestApprovalFromRenderer,
     USER_DENIED_MESSAGE,
+    getScopedSessionIds,
+    getSessionMeta,
   } = deps;
 
   const vaultService = createVaultService({ invokeVaultAgent });
@@ -178,6 +180,29 @@ function createCapabilityRpcDispatcher(deps) {
         hostname: host?.hostname || "",
       };
     }
+    if (
+      typeof params?.chatSessionId === "string"
+      && ["vault.host.notes.get", "vault.host.notes.set", "portforward.start", "portforward.stop"].includes(capability.id)
+    ) {
+      const requestedHostId = typeof params?.hostId === "string" ? params.hostId.trim() : "";
+      const scopedSessionIds = typeof getScopedSessionIds === "function"
+        ? getScopedSessionIds(params.chatSessionId)
+        : [];
+      const inScope = requestedHostId && scopedSessionIds.some((sessionId) => {
+        const meta = typeof getSessionMeta === "function"
+          ? getSessionMeta(sessionId, params.chatSessionId)
+          : null;
+        return meta?.connected === true
+          && (meta.hostId || meta.savedHostId) === requestedHostId;
+      });
+      if (!inScope) {
+        return {
+          ok: false,
+          error: `Host "${requestedHostId || "(missing)"}" is not connected in the current chat scope.`,
+        };
+      }
+    }
+
     const permission = evaluatePermissionWithGrants({
       rpcMethod,
       surface,

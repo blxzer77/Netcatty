@@ -471,7 +471,7 @@
       "requiresChatSession": false,
       "bypassesObserverBlock": false,
       "bypassesApproval": true,
-      "bypassesChatCancel": true
+      "bypassesChatCancel": false
     }
   },
   {

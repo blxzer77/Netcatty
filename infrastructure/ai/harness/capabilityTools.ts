@@ -612,6 +612,23 @@ function validatePlanTargetIdentities(
   return null;
 }
 
+function validateDirectScopedHostCapability(
+  capabilityId: string,
+  args: Record<string, unknown>,
+  context: ExecutorContext,
+): string | null {
+  if (![
+    'vault.host.notes.get',
+    'vault.host.notes.set',
+    'portforward.start',
+    'portforward.stop',
+  ].includes(capabilityId)) return null;
+  const hostId = typeof args.hostId === 'string' ? args.hostId.trim() : '';
+  if (!hostId) return `${capabilityId} requires a hostId bound to the current scope.`;
+  const connected = context.sessions.some(session => session.connected && session.hostId === hostId);
+  return connected ? null : `Host "${hostId}" is not connected in the current Catty scope.`;
+}
+
 function validatePlanTargets(steps: readonly PlanStep[], context: ExecutorContext): string | null {
   const targetSessionIds = steps.flatMap(step => [
     ...(step.sessionId ? [step.sessionId] : []),
@@ -1244,6 +1261,12 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
 
         let rpcParams = args as Record<string, unknown>;
+        const directTargetError = validateDirectScopedHostCapability(
+          spec.capabilityId,
+          rpcParams,
+          typeof deps.context === 'function' ? deps.context() : deps.context,
+        );
+        if (directTargetError) return { error: directTargetError };
         if (spec.capabilityId === 'vault.host.notes.set') {
           const merged = await prepareMachineNotesWrite(deps, rpcParams, abortSignal);
           if ('error' in merged) return merged;

@@ -29,6 +29,8 @@ function createTestDispatcher(overrides = {}) {
     isChatSessionCancelled: () => false,
     requestApprovalFromRenderer,
     USER_DENIED_MESSAGE: "User denied the operation.",
+    getScopedSessionIds: () => ["scope-session"],
+    getSessionMeta: () => ({ connected: true, hostId: "host-1" }),
     ...overrides,
   });
 }
@@ -392,10 +394,30 @@ test("dispatchCapabilityRpc routes portforward start to portforward service", as
   const result = await dispatch("portforward/start", {
     chatSessionId: "chat-1",
     ruleId: "rule-1",
+    hostId: "host-1",
   });
   assert.equal(invokedOp, "portforward.start");
   assert.equal(result.ok, true);
   assert.equal(result.ruleId, "rule-1");
+});
+
+test("chat-scoped portforward rejects a host outside the live session scope", async () => {
+  let invoked = false;
+  const dispatch = createTestDispatcher({
+    invokeVaultAgent: async () => {
+      invoked = true;
+      return { ok: true };
+    },
+  });
+
+  const result = await dispatch("portforward/start", {
+    chatSessionId: "chat-1",
+    ruleId: "rule-1",
+    hostId: "host-outside-scope",
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not connected in the current chat scope/);
+  assert.equal(invoked, false);
 });
 
 test("portforward cancellation waits for start and stops the exact rule", async () => {
