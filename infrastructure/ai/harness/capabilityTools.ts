@@ -455,6 +455,53 @@ async function runSingleHostCommand(
   };
 }
 
+function runbookTargetMismatch(
+  steps: readonly PlanStep[],
+  runbook: Runbook,
+  context: ExecutorContext,
+): string | null {
+  if (!runbook.targets?.trim()) return null;
+  const selectors = runbook.targets.split(/[,;]+/).map(value => value.trim()).filter(Boolean);
+  if (selectors.length === 0) return 'The runbook targets field must name at least one exact session, host ID, hostname, or host label.';
+
+  const expectedHostIds = new Set<string>();
+  for (const selector of selectors) {
+    const matches = context.sessions.filter(session => session.connected && [
+      session.sessionId,
+      session.hostId,
+      session.hostname,
+      session.label,
+    ].some(value => value?.toLowerCase() === selector.toLowerCase()));
+    const hostIds = new Set(matches.map(session => session.hostId).filter((id): id is string => Boolean(id)));
+    if (matches.length === 0 || hostIds.size !== 1) {
+      return `Runbook target "${selector}" is not an exact, unique connected host in the current scope.`;
+    }
+    for (const hostId of hostIds) expectedHostIds.add(hostId);
+  }
+
+  const actualHostIds = new Set<string>();
+  for (const step of steps) {
+    const sessionIds = [
+      ...(step.sessionId ? [step.sessionId] : []),
+      ...(step.sessionIds ?? []),
+      ...(typeof step.args?.sessionId === 'string' ? [step.args.sessionId] : []),
+      ...(parsePlanSessionIds(step.args?.sessionIds) ?? []),
+    ];
+    for (const sessionId of sessionIds) {
+      const session = context.sessions.find(entry => entry.sessionId === sessionId && entry.connected);
+      if (session?.hostId) actualHostIds.add(session.hostId);
+    }
+    if (typeof step.args?.hostId === 'string') actualHostIds.add(step.args.hostId);
+  }
+  if (actualHostIds.size === 0 || [...actualHostIds].some(hostId => !expectedHostIds.has(hostId))) {
+    return `Plan targets do not match the runbook targets (${selectors.join(', ')}).`;
+  }
+  if ([...expectedHostIds].some(hostId => !actualHostIds.has(hostId))) {
+    return `Plan omits one or more runbook targets (${selectors.join(', ')}).`;
+  }
+  return null;
+}
+
 function runbookPlanMismatch(steps: PlanStep[], runbook: Runbook): string | null {
   const expected = runbookStepsToPlanSteps(runbook);
   if (steps.length !== expected.length) {
@@ -644,6 +691,8 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
             error: `Selected runbook is not executable: ${runbookIssues.map(issue => issue.message).join(' ')}`,
           };
         }
+        const targetMismatch = runbookTargetMismatch(steps, selectedRunbook, initialContext);
+        if (targetMismatch) return { error: targetMismatch };
         const mismatch = runbookPlanMismatch(steps, selectedRunbook);
         if (mismatch) return { error: mismatch };
       }
