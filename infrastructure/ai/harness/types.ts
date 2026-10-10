@@ -16,6 +16,8 @@ export type AgentEventType =
   | 'approval_resolved'
   | 'compaction'
   | 'compaction_start'
+  | 'plan_proposed'
+  | 'plan_resolved'
   | 'usage'
   | 'performance'
   | 'model_call_start'
@@ -110,6 +112,47 @@ export interface ApprovalResolvedEvent extends AgentEventBase {
   persistedGrantId?: string;
 }
 
+export type PlanStepRisk = 'read' | 'low' | 'high';
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  /** Tool the step intends to use, e.g. `terminal_execute`. */
+  toolName?: string;
+  /** Target session when the tool operates on a host. */
+  sessionId?: string;
+  /** The exact command or payload the step intends to run. */
+  command?: string;
+  reason?: string;
+  /** How the step proves it worked. */
+  verification?: string;
+  risk?: PlanStepRisk;
+}
+
+export interface PlanPreconditionResult {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+}
+
+export interface PlanProposedEvent extends AgentEventBase {
+  type: 'plan_proposed';
+  planId: string;
+  goal: string;
+  steps: PlanStep[];
+  /** Checks that had to pass before the plan could be proposed. */
+  preconditions?: PlanPreconditionResult[];
+  expiresAt?: number;
+}
+
+export interface PlanResolvedEvent extends AgentEventBase {
+  type: 'plan_resolved';
+  planId: string;
+  outcome: 'approved' | 'denied' | 'timeout';
+  note?: string;
+}
+
 export type TokenEstimatorKind = 'chars-div-4' | 'openai-heuristic' | 'anthropic-heuristic' | 'google-heuristic';
 
 export interface CompactionTrace {
@@ -201,6 +244,8 @@ export type AgentEvent =
   | PlanUpdateEvent
   | ApprovalRequestedEvent
   | ApprovalResolvedEvent
+  | PlanProposedEvent
+  | PlanResolvedEvent
   | CompactionEvent
   | CompactionStartEvent
   | UsageEvent
