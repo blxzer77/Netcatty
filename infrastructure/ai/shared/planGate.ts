@@ -81,6 +81,25 @@ type PlanTraceEvent =
   | Omit<PlanProposedEvent, 'sessionId' | 'backend' | 'timestamp'>
   | Omit<PlanResolvedEvent, 'sessionId' | 'backend' | 'timestamp'>;
 
+const TRACE_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
+const TRACE_SECRET_PATTERN = /(?:^|[^A-Za-z0-9])(?:api[_-]?(?:key|token)|access[_-]?token|token|password|secret)\s*[:=]\s*[^\s,;]+/gi;
+
+function redactTraceValue(value: unknown, key?: string): unknown {
+  if (key && TRACE_SENSITIVE_KEY.test(key)) return '[redacted]';
+  if (Array.isArray(value)) return value.map(entry => redactTraceValue(entry));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([entryKey, entryValue]) => [entryKey, redactTraceValue(entryValue, entryKey)]),
+    );
+  }
+  return typeof value === 'string' ? value.replace(TRACE_SECRET_PATTERN, '[redacted]') : value;
+}
+
+function redactTraceSteps(steps: PlanStep[]): PlanStep[] {
+  return redactTraceValue(steps) as PlanStep[];
+}
+
 function trace(plan: ProposedPlan, event: PlanTraceEvent): void {
   const base = {
     sessionId: plan.chatSessionId ?? 'global',
@@ -90,9 +109,12 @@ function trace(plan: ProposedPlan, event: PlanTraceEvent): void {
   };
   // Each branch restores the discriminant the Omit above stripped, so the event
   // stays assignable to the shared AgentEvent union the trace store accepts.
-  const appended = event.type === 'plan_proposed'
-    ? { ...base, ...event, type: 'plan_proposed' as const }
-    : { ...base, ...event, type: 'plan_resolved' as const };
+  const safeEvent = event.type === 'plan_proposed'
+    ? { ...event, goal: String(redactTraceValue(event.goal)), steps: redactTraceSteps(event.steps) }
+    : { ...event, ...(event.note ? { note: String(redactTraceValue(event.note)) } : {}) };
+  const appended = safeEvent.type === 'plan_proposed'
+    ? { ...base, ...safeEvent, type: 'plan_proposed' as const }
+    : { ...base, ...safeEvent, type: 'plan_resolved' as const };
   globalTraceStore.append(appended);
 }
 
@@ -126,6 +148,16 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
 
   const existing = pendingPlans.get(planId);
   if (existing) {
+    if (
+      existing.plan.chatSessionId !== input.chatSessionId
+      || canonicalPlanValue(existing.plan.steps) !== canonicalPlanValue(plan.steps)
+      || existing.plan.goal !== plan.goal
+    ) {
+      return Promise.resolve({
+        outcome: 'denied',
+        note: 'A plan with this id is already pending for a different chat or payload.',
+      });
+    }
     return new Promise<PlanDecision>((resolve) => {
       const previousResolve = existing.resolve;
       existing.resolve = (decision) => {

@@ -4,6 +4,7 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 import { Button } from '../ui/button';
 import type { PlanStepRisk } from '../../infrastructure/ai/harness/types';
 import type { ProposedPlan } from '../../infrastructure/ai/shared/planGate';
+import { redactSecretsForModel } from '../../infrastructure/ai/harness/modelSecretRedaction';
 
 /**
  * Approval card for a proposed server-operations plan.
@@ -90,11 +91,17 @@ export const PlanApprovalCard: React.FC<{
                   {step.command}
                 </pre>
               ) : null}
+              {step.args ? (
+                <pre data-testid={`plan-step-args-${step.id}`} className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 px-1.5 py-1 font-mono text-[11px] leading-4">
+                  args: {formatPlanArgs(step.args)}
+                </pre>
+              ) : null}
               <div className="mt-1 space-y-0.5 text-muted-foreground leading-4">
-                {(step.toolName || step.sessionId) ? (
+                {(step.toolName || step.sessionId || step.sessionIds?.length) ? (
                   <div>
                     {t('ai.plan.target')}: {step.toolName ?? '-'}
                     {step.sessionId ? ` @ ${step.sessionId}` : ''}
+                    {step.sessionIds?.length ? ` @ [${step.sessionIds.join(', ')}]` : ''}
                   </div>
                 ) : null}
                 {step.reason ? <div>{t('ai.plan.reason')}: {step.reason}</div> : null}
@@ -122,6 +129,29 @@ export const PlanApprovalCard: React.FC<{
     </div>
   );
 };
+
+const PLAN_ARG_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential)/i;
+const MAX_PLAN_ARGS_PREVIEW_CHARS = 8_000;
+
+function redactPlanPreview(value: unknown, key?: string): unknown {
+  if (key && PLAN_ARG_SENSITIVE_KEY.test(key)) return '[redacted]';
+  if (Array.isArray(value)) return value.map(entry => redactPlanPreview(entry));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([entryKey, entryValue]) => [entryKey, redactPlanPreview(entryValue, entryKey)]),
+    );
+  }
+  return typeof value === 'string' ? redactSecretsForModel(value) : value;
+}
+
+function formatPlanArgs(args: Record<string, unknown>): string {
+  const serialized = JSON.stringify(redactPlanPreview(args));
+  if (!serialized) return '{}';
+  return serialized.length > MAX_PLAN_ARGS_PREVIEW_CHARS
+    ? `${serialized.slice(0, MAX_PLAN_ARGS_PREVIEW_CHARS)}…`
+    : serialized;
+}
 
 const RiskBadge: React.FC<{ risk?: PlanStepRisk }> = ({ risk }) => {
   const { t } = useI18n();

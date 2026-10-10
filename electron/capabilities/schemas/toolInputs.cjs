@@ -421,7 +421,7 @@ const TOOL_INPUT_FIELDS = Object.freeze({
       type: "string",
       optional: true,
       description:
-        "Required when proxyRisk is true. JSON object keyed by check id: backup-connection, alternate-route, config-backup, recovery-plan. Each value is {ok, detail}. The harness verifies backup-connection from the live sessions and requires recovery-plan to name the procedure; alternate-route and config-backup are actions you must actually have run and report honestly in detail.",
+        "Required when proxyRisk is true. JSON object keyed by check id: backup-connection, alternate-route, config-backup, recovery-plan. Each value is {ok, detail}. The harness verifies backup-connection from live sessions and requires recovery-plan to name the procedure; model-only declarations for alternate-route and config-backup remain unverified and fail closed until host-bound tool-result evidence exists.",
     },
   },
   "harness.terminal.batch": {

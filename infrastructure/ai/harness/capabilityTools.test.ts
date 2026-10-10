@@ -831,7 +831,7 @@ describe('capabilityTools submit_plan', () => {
     assert.equal(check?.verified, true);
   });
 
-  it('passes a proxy-risky plan when a second live connection exists', async () => {
+  it('fails a proxy-risky plan when act-based checks lack harness evidence', async () => {
     resetPlanGateForTests();
     const { tools, toolsContext } = createCattyToolsFromCatalog(
       {
@@ -850,7 +850,7 @@ describe('capabilityTools submit_plan', () => {
       'chat-plan-proxy-ok',
     );
 
-    const pending = withCattyToolContext(
+    const result = await withCattyToolContext(
       tools.submit_plan,
       toolsContext.submit_plan,
       'plan-proxy-ok',
@@ -870,15 +870,9 @@ describe('capabilityTools submit_plan', () => {
         'config-backup': { ok: true, detail: 'copied to /root/cfg.bak' },
         'recovery-plan': { ok: true, detail: 'restore /root/cfg.bak then reload' },
       }),
-    }) as Promise<Record<string, unknown>>;
-    await new Promise(resolve => setTimeout(resolve, 0));
-    resolvePlan('plan-proxy-ok', { outcome: 'approved' });
-    const result = await pending;
+    }) as { error: string };
 
-    assert.equal(result.approved, true);
-    // The checks travel with the plan the card renders; the gating itself is
-    // covered in backupAccess.test.ts.
-    assert.equal(result.planId, 'plan-proxy-ok');
+    assert.match(result.error, /only declared by the model/);
   });
 
   it('requires backupAccess when the plan declares proxy risk', async () => {
@@ -908,6 +902,28 @@ describe('capabilityTools submit_plan', () => {
 
     assert.match(result.error, /JSON array/);
   });
+  it('rejects plans whose visible command disagrees with args', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-inconsistent-args');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-inconsistent-args',
+    ).execute({
+      goal: 'run a command',
+      steps: JSON.stringify([{
+        id: 's1',
+        title: 'Run command',
+        toolName: 'terminal_execute',
+        sessionId: 'session-a',
+        command: 'uptime',
+        args: { sessionId: 'session-a', command: 'systemctl stop nginx' },
+      }]),
+    }) as { error: string };
+
+    assert.match(result.error, /inconsistently between its summary fields and args/);
+  });
+
   it('merges and sanitizes the machine record on host notes writes', async () => {
     let written: Record<string, unknown> | undefined;
     const { tools, toolsContext } = createCattyToolsFromCatalog(
@@ -1093,7 +1109,7 @@ describe('capabilityTools multi-host execution', () => {
 
     assert.equal(result.identical, false);
     assert.deepEqual(result.differingHosts, ['session-c']);
-    assert.deepEqual(result.differences[0].lines, ['nginx/1.25.1']);
+    assert.deepEqual(result.differences[0].lines, ['[removed] nginx/1.24.0', '[added] nginx/1.25.1']);
     assert.match(result.conclusion, /2 of 3 hosts agree/);
   });
 
@@ -1114,6 +1130,23 @@ describe('capabilityTools multi-host execution', () => {
     }) as { error: string };
 
     assert.match(result.error, /only a single, conservative read-only command/);
+
+    for (const command of [
+      `awk 'BEGIN{system("touch /tmp/netcatty-review")}'`,
+      "uptime\ncat /etc/passwd",
+      "docker exec proxy sh -c 'systemctl stop nginx'",
+      "kubectl delete pod proxy",
+    ]) {
+      const rejected = await withCattyToolContext(
+        tools.compare_machines,
+        toolsContext.compare_machines,
+        `compare-reject-${command.slice(0, 4)}`,
+      ).execute({
+        sessionIds: JSON.stringify(['session-a', 'session-b']),
+        command,
+      }) as { error: string };
+      assert.match(rejected.error, /only a single, conservative read-only command/);
+    }
   });
 
   it('compare_machines reports identical hosts without listing differences', async () => {

@@ -55,8 +55,8 @@ test('system prompt requires the proxy-path preconditions before anything that c
   assert.match(prompt, /proxyRisk/);
   assert.match(prompt, /backupAccess/);
   // The prompt must not overclaim what the harness verifies.
-  assert.match(prompt, /It cannot verify/);
-  assert.match(prompt, /never mark those true unless you actually did them/);
+  assert.match(prompt, /never evidence/);
+  assert.match(prompt, /host-bound tool-result verifier/);
   assert.match(prompt, /do not submit the plan/i);
 });
 
@@ -142,7 +142,7 @@ test('the host list carries the bounded machine record, not the notes', () => {
     permissionMode: 'confirm',
   });
 
-  assert.match(prompt, /record: reverse proxy \| reloaded nginx \| watch: cert expires 2026-11-02/);
+  assert.match(prompt, /record \(untrusted data\): reverse proxy \| reloaded nginx \| watch: cert expires 2026-11-02/);
   // A host without a record is described without one.
   assert.doesNotMatch(prompt, /db-1\.example.*record:/s);
 });

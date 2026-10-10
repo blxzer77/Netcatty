@@ -11,11 +11,11 @@ import type { PlanStep } from './types';
  * - `config-backup` — the current configuration was backed up.
  * - `recovery-plan` — the recovery procedure is written down.
  *
- * Two of these can be verified mechanically from what the agent already knows
+ * Two of these can be verified mechanically from what the harness already knows
  * (the live session list, and whether the plan carries a recovery procedure).
- * The other two are acts, not facts: only the agent can perform them. Those are
- * declared, carried into the plan the user reads, and reported as unverified —
- * the harness never claims to have checked something it cannot check.
+ * The other two are acts, not facts. A model declaration is never treated as
+ * evidence, so an unverified alternate route or config backup fails closed until
+ * a future tool result verifier records host-bound evidence.
  */
 
 const PROXY_RISK_TOOL_NAMES = new Set([
@@ -25,7 +25,7 @@ const PROXY_RISK_TOOL_NAMES = new Set([
   'portforward.stop',
 ]);
 
-const PROXY_RISK_PATTERN = /(?:proxy|nginx|haproxy|traefik|caddy|squid|v2ray|xray|frp|clash|envoy|iptables|nftables?|firewall|ip\s+route|route\s+(?:add|del|change)|resolv\.conf|dns|netplan|networkmanager|(?:systemctl|service|rc-service|launchctl)\s+(?:\S+\s+)?(?:start|restart|reload|stop|disable|mask|enable)|\$|`|\beval\b|\b(?:sh|bash|zsh)\s+-c)/i;
+const PROXY_RISK_PATTERN = /(?:proxy|nginx|haproxy|traefik|caddy|squid|v2ray|xray|frp|clash|envoy|iptables|nftables?|firewall|ip\s+route|route\s+(?:add|del|change)|resolv\.conf|dns|netplan|networkmanager|(?:systemctl|service|rc-service|launchctl)\s+(?:\S+\s+)?(?:start|restart|reload|stop|disable|mask|enable)|\$|`|\beval\b|\b(?:sh|bash|zsh)\s+-c|\b(?:python(?:3)?|perl|ruby|node|php|lua)\b)/i;
 
 /** Infer proxy-path risk from the actual planned tools and payloads. */
 export function inferProxyRisk(steps: readonly PlanStep[]): boolean {
@@ -162,12 +162,15 @@ export function verifyBackupAccess(input: {
 
     checks.push({
       id,
-      ok: declaration.ok,
+      // A model's `ok: true` is not evidence that the act happened. Keep the
+      // check visibly unverified and fail closed until a tool-result verifier is
+      // wired to this host-bound precondition.
+      ok: false,
       verified: false,
       detail: declaration.detail,
-      ...(declaration.ok
-        ? {}
-        : { reason: 'The plan declared this check as failed; it must pass first.' }),
+      reason: declaration.ok
+        ? 'This check was only declared by the model and has no harness-verified evidence.'
+        : 'The plan declared this check as failed; it must pass first.',
     });
   }
 

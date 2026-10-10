@@ -212,7 +212,13 @@ describe('compareHostOutputs', () => {
     // The largest group is the baseline put first.
     assert.deepEqual(comparison.groups[0].members, ['a', 'b']);
     assert.deepEqual(comparison.differences[0].members, ['c']);
-    assert.deepEqual(comparison.differences[0].lines, ['/dev/sdb1', '200G', 'EXTRA']);
+    assert.deepEqual(comparison.differences[0].lines, [
+      '[removed] /dev/sda1',
+      '[removed] 100G',
+      '[added] /dev/sdb1',
+      '[added] 200G',
+      '[added] EXTRA',
+    ]);
     assert.match(comparison.conclusion, /2 of 3 hosts agree/);
     assert.match(comparison.conclusion, /differing: c/);
   });

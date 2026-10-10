@@ -38,6 +38,7 @@ const plan: ProposedPlan = {
       toolName: 'terminal_execute',
       sessionId: 'session-a',
       command: 'systemctl reload nginx',
+      args: { sessionId: 'session-a', command: 'systemctl reload nginx', API_TOKEN: 'tok_live_1234567890' },
       reason: 'Apply the new configuration',
       verification: 'curl localhost returns 200',
       risk: 'high',
@@ -60,6 +61,9 @@ test('PlanApprovalCard renders the plan the user has to approve', () => {
   assert.match(markup, /Back up the current config/);
   assert.match(markup, /cp \/etc\/nginx\/nginx\.conf \/etc\/nginx\/nginx\.conf\.bak/);
   assert.match(markup, /Apply the new configuration/);
+  assert.match(markup, /args:/);
+  assert.match(markup, /\[redacted\]/);
+  assert.doesNotMatch(markup, /tok_live_1234567890/);
   assert.match(markup, /curl localhost returns 200/);
   assert.match(markup, /terminal_execute @ session-a/);
   assert.match(markup, /high risk/);

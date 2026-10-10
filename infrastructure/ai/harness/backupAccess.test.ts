@@ -37,19 +37,20 @@ describe('proxy-risk inference', () => {
 });
 
 describe('verifyBackupAccess', () => {
-  it('passes when every check is declared and the fallback connection exists', () => {
+  it('fails closed when act-based checks have only model declarations', () => {
     const result = verifyBackupAccess({
       declarations: allDeclared,
       hosts,
       targets: [{ hostId: 'host-1' }],
     });
 
-    assert.equal(result.ok, true);
-    assert.equal(result.blockReason, undefined);
+    assert.equal(result.ok, false);
+    assert.match(result.blockReason ?? '', /only declared by the model/);
     assert.equal(result.checks.length, BACKUP_ACCESS_CHECK_IDS.length);
-    // Two checks are verified by the harness; the other two are declared only.
     const verified = result.checks.filter(check => check.verified).map(check => check.id);
     assert.deepEqual(verified, ['backup-connection', 'recovery-plan']);
+    assert.equal(result.checks.find(check => check.id === 'alternate-route')?.ok, false);
+    assert.equal(result.checks.find(check => check.id === 'config-backup')?.ok, false);
   });
 
   it('blocks a plan targeting a host that has only one live session', () => {
@@ -124,7 +125,7 @@ describe('verifyBackupAccess', () => {
     for (const id of ['alternate-route', 'config-backup'] as const) {
       const check = result.checks.find(entry => entry.id === id);
       assert.equal(check?.verified, false, `${id} must stay unverified`);
-      assert.equal(check?.ok, true);
+      assert.equal(check?.ok, false);
     }
   });
 

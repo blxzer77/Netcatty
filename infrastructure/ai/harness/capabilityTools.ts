@@ -226,6 +226,15 @@ interface LocalExecutionContext {
  * and `preconditions` as JSON strings because the generated shapes are scalar
  * fields, so the plan is decoded here.
  */
+function parsePlanSessionIds(raw: unknown): string[] | undefined {
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return undefined; }
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  return parsed.filter((id): id is string => typeof id === 'string');
+}
+
 function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: PlanPreconditionResult[]; error?: string } {
   let parsed: unknown;
   try {
@@ -236,27 +245,58 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
   if (!Array.isArray(parsed) || parsed.length === 0) {
     return { error: 'A plan needs at least one step.' };
   }
+  const malformedArgs = parsed.find((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    if (!Object.prototype.hasOwnProperty.call(entry, 'args')) return false;
+    const args = (entry as { args?: unknown }).args;
+    return args !== undefined && (!args || typeof args !== 'object' || Array.isArray(args));
+  });
+  if (malformedArgs) {
+    return { error: 'Every plan step args field must be a JSON object when present.' };
+  }
   const steps = parsed.map((entry, index) => {
     const step = (entry ?? {}) as Partial<PlanStep>;
+    const args = step.args && typeof step.args === 'object' && !Array.isArray(step.args)
+      ? step.args as Record<string, unknown>
+      : undefined;
+    const argCommand = typeof args?.command === 'string' ? args.command : undefined;
+    const argSessionId = typeof args?.sessionId === 'string' ? args.sessionId : undefined;
+    const argSessionIds = parsePlanSessionIds(args?.sessionIds);
     return {
       id: typeof step.id === 'string' && step.id.trim() ? step.id : `step-${index + 1}`,
       title: typeof step.title === 'string' && step.title.trim()
         ? step.title
-        : String(step.command ?? `Step ${index + 1}`),
+        : String(step.command ?? argCommand ?? `Step ${index + 1}`),
       ...(typeof step.toolName === 'string' ? { toolName: step.toolName } : {}),
-      ...(typeof step.sessionId === 'string' ? { sessionId: step.sessionId } : {}),
+      ...(typeof step.sessionId === 'string' ? { sessionId: step.sessionId } : argSessionId ? { sessionId: argSessionId } : {}),
       ...(Array.isArray(step.sessionIds)
         ? { sessionIds: step.sessionIds.filter((id): id is string => typeof id === 'string') }
-        : {}),
-      ...(step.args && typeof step.args === 'object' && !Array.isArray(step.args)
-        ? { args: step.args as Record<string, unknown> }
-        : {}),
-      ...(typeof step.command === 'string' ? { command: step.command } : {}),
+        : argSessionIds ? { sessionIds: argSessionIds } : {}),
+      ...(args ? { args } : {}),
+      ...(typeof step.command === 'string' ? { command: step.command } : argCommand ? { command: argCommand } : {}),
       ...(typeof step.reason === 'string' ? { reason: step.reason } : {}),
       ...(typeof step.verification === 'string' ? { verification: step.verification } : {}),
       ...(typeof step.risk === 'string' ? { risk: step.risk as PlanStep['risk'] } : {}),
     } satisfies PlanStep;
   });
+  const inconsistent = steps.find(step => {
+    const args = step.args;
+    if (!args) return false;
+    const hasCommand = Object.prototype.hasOwnProperty.call(args, 'command');
+    const hasSessionId = Object.prototype.hasOwnProperty.call(args, 'sessionId');
+    const hasSessionIds = Object.prototype.hasOwnProperty.call(args, 'sessionIds');
+    if (hasCommand && typeof args.command !== 'string') return true;
+    if (hasSessionId && typeof args.sessionId !== 'string') return true;
+    if (hasCommand && step.command !== args.command) return true;
+    if (hasSessionId && step.sessionId !== args.sessionId) return true;
+    const argSessionIds = parsePlanSessionIds(args.sessionIds);
+    if (hasSessionIds && argSessionIds === undefined) return true;
+    return argSessionIds !== undefined
+      && JSON.stringify(step.sessionIds ?? []) !== JSON.stringify(argSessionIds);
+  });
+  if (inconsistent) {
+    return { error: `Plan step "${inconsistent.title}" repeats a command or target inconsistently between its summary fields and args.` };
+  }
   return { steps };
 }
 

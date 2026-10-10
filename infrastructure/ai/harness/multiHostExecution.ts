@@ -58,7 +58,7 @@ export interface RunCommandOnSessionsInput {
 
 const MAX_COMPARE_LINES_PER_HOST = 20;
 
-const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|cat|head|tail|grep|rg|awk|sed|ps|top|ss|netstat|nginx|systemctl|service|docker|kubectl|git|find)(?:\s|$)/i;
+const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|cat|head|tail|grep|rg|ps|top|ss|netstat|nginx|systemctl|service)(?:\s|$)/i;
 
 /**
  * Compare is intentionally conservative: a shell command is not considered
@@ -67,13 +67,12 @@ const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmsta
  */
 export function isReadOnlyCompareCommand(command: string): boolean {
   const trimmed = command.trim();
-  if (!trimmed || /[;&|`$<>]/.test(trimmed)) return false;
+  if (!trimmed || /[\r\n;&|`$<>]/.test(trimmed)) return false;
   if (/(?:^|\s)(?:rm|mv|cp|mkdir|touch|chmod|chown|kill|reboot|shutdown|tee)(?:\s|$)/i.test(trimmed)) return false;
   if (/(?:sed|perl)\s+[^\n]*\s-i(?:\s|$)/i.test(trimmed)) return false;
   if (/(?:systemctl|service)\s+(?:(?:\S+\s+)?(?:start|restart|reload|stop|enable|disable|mask|unmask)\b|(?:start|restart|reload|stop|enable|disable|mask|unmask)\s+\S+)/i.test(trimmed)) return false;
   if (/\bnginx\s+-s\s+(?:reload|stop|quit)\b/i.test(trimmed)) return false;
   if (/(?:ip|iptables|nft|ufw|firewall-cmd)\s+(?:route|link|addr|add|delete|del|insert|remove|flush|enable|disable)/i.test(trimmed)) return false;
-  if (/(?:find\s+[^\n]*\s-(?:exec|execdir|delete))(?:\s|$)/i.test(trimmed)) return false;
   return READ_ONLY_COMPARE_COMMAND.test(trimmed);
 }
 
@@ -175,28 +174,15 @@ export function compareHostOutputs(
   const groups = [...byOutput.entries()]
     .map(([output, members]) => ({ members, lineCount: countLines(output) }))
     .sort((a, b) => b.members.length - a.members.length || a.lineCount - b.lineCount);
-  const baselineLines = groups.length > 0
-    ? lineSet(firstHostOutput(answered, groups[0]?.members ?? []))
-    : new Set<string>();
-
+  const baselineHost = answered.find(host => (groups[0]?.members ?? []).includes(host.sessionId));
+  const baselineOutput = baselineHost ? comparisonText(baselineHost) : '';
   const differences = groups.slice(1).map(group => {
     const members = group.members;
     const memberHost = answered.find(host => members.includes(host.sessionId));
-    const baselineHost = answered.find(host => (groups[0]?.members ?? []).includes(host.sessionId));
-    const unique = memberHost
-      ? splitLines(memberHost.stdout).filter(line => !baselineLines.has(line))
-      : [];
-    if (unique.length === 0 && memberHost && baselineHost) {
-      if (memberHost.stderr !== baselineHost.stderr) {
-        unique.push(`[stderr] ${memberHost.stderr || '(empty)'}`);
-      }
-      if (memberHost.exitCode !== baselineHost.exitCode) {
-        unique.push(`[exitCode] ${memberHost.exitCode ?? 'null'}`);
-      }
-    }
+    const lines = memberHost ? boundedLineDiff(baselineOutput, comparisonText(memberHost)) : [];
     return {
       members,
-      lines: unique.slice(0, MAX_COMPARE_LINES_PER_HOST),
+      lines: lines.slice(0, MAX_COMPARE_LINES_PER_HOST),
     };
   });
 
@@ -247,14 +233,6 @@ function buildConclusion(input: {
   return `${parts.join('; ')}.`;
 }
 
-function firstHostOutput(
-  hosts: readonly HostCommandOutcome[],
-  members: readonly string[],
-): string {
-  const host = hosts.find(entry => members.includes(entry.sessionId));
-  return host ? comparisonText(host) : '';
-}
-
 function comparisonText(host: HostCommandOutcome): string {
   return [
     host.stdout,
@@ -271,8 +249,27 @@ function countLines(output: string): number {
   return output.length === 0 ? 0 : splitLines(output).length;
 }
 
-function lineSet(output: string): Set<string> {
-  return new Set(splitLines(output).filter(line => line.trim().length > 0));
+function boundedLineDiff(baseline: string, actual: string): string[] {
+  const baselineCounts = countLineValues(splitLines(baseline));
+  const actualCounts = countLineValues(splitLines(actual));
+  const removed: string[] = [];
+  const added: string[] = [];
+
+  for (const [line, count] of baselineCounts) {
+    const difference = count - (actualCounts.get(line) ?? 0);
+    for (let index = 0; index < difference; index += 1) removed.push(`[removed] ${line}`);
+  }
+  for (const [line, count] of actualCounts) {
+    const difference = count - (baselineCounts.get(line) ?? 0);
+    for (let index = 0; index < difference; index += 1) added.push(`[added] ${line}`);
+  }
+  return [...removed, ...added];
+}
+
+function countLineValues(lines: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
+  return counts;
 }
 
 function dedupe(ids: readonly string[]): string[] {

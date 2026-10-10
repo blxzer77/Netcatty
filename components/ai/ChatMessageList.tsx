@@ -234,7 +234,10 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   // Subscribe to plan requests; replay covers a remount while a plan waits.
   useEffect(() => {
     const handler = (plan: ProposedPlan) => {
-      if (plan.chatSessionId && activeSessionId && plan.chatSessionId !== activeSessionId) return;
+      // A plan is actionable only while its authoritative chat session is
+      // active. Do not park a plan received during session switching and later
+      // let a stale card resolve it from another session.
+      if (!activeSessionId || plan.chatSessionId !== activeSessionId) return;
       setPendingPlans(prev => new Map(prev).set(plan.planId, plan));
     };
     const unsub = onPlanProposed(handler);
@@ -320,8 +323,8 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   const settlePlan = useCallback((planId: string, outcome: 'approved' | 'denied') => {
     const plan = pendingPlans.get(planId);
     if (!plan) return;
-    if (plan.chatSessionId && activeSessionId && plan.chatSessionId !== activeSessionId) return;
-    resolvePlan(planId, { outcome }, plan.chatSessionId);
+    if (!activeSessionId || plan.chatSessionId !== activeSessionId) return;
+    resolvePlan(planId, { outcome }, activeSessionId);
     setPendingPlans(prev => { const m = new Map(prev); m.delete(planId); return m; });
   }, [activeSessionId, pendingPlans]);
 
@@ -869,7 +872,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
 
         {/* A plan the agent is waiting on: approve once, then execute. */}
         {!hideToolCalls && Array.from(pendingPlans.entries())
-          .filter(([, plan]) => !activeSessionId || !plan.chatSessionId || plan.chatSessionId === activeSessionId)
+          .filter(([, plan]) => Boolean(activeSessionId) && plan.chatSessionId === activeSessionId)
           .map(([planId, plan]) => (
             <React.Profiler key={planId} {...getAIPanelProfilerProps('AIChatPanel.Plan.Approval')}>
               <div>

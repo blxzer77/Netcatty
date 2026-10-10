@@ -91,6 +91,27 @@ describe('planGate', () => {
     assert.deepEqual(await second, { outcome: 'approved' });
   });
 
+  it('rejects a reused plan id from another chat or payload', async () => {
+    const first = proposePlan({
+      goal: 'install nginx',
+      steps: [step()],
+      chatSessionId: 'chat-plan-owner',
+      planId: 'plan-reused',
+    });
+    const differentChat = proposePlan({
+      goal: 'remove nginx',
+      steps: [step({ command: 'rm -rf /' })],
+      chatSessionId: 'chat-plan-attacker',
+      planId: 'plan-reused',
+    });
+    assert.deepEqual(await differentChat, {
+      outcome: 'denied',
+      note: 'A plan with this id is already pending for a different chat or payload.',
+    });
+    resolvePlan('plan-reused', { outcome: 'approved' });
+    assert.deepEqual(await first, { outcome: 'approved' });
+  });
+
   it('ignores a resolution for an unknown or already resolved plan', () => {
     resolvePlan('missing-plan', { outcome: 'approved' });
     const pending = proposePlan({
@@ -304,5 +325,29 @@ describe('planGate', () => {
     assert.equal(traced[0]?.type === 'plan_proposed' ? traced[0].goal : '', 'install nginx');
     assert.equal(traced[1]?.type === 'plan_resolved' ? traced[1].outcome : '', 'approved');
     globalTraceStore.clear(chatSessionId);
+  });
+
+  it('redacts structured secrets before plan events enter the trace', async () => {
+    globalTraceStore.clear('chat-trace-secret');
+    const pending = proposePlan({
+      goal: 'write notes',
+      steps: [step({
+        args: {
+          sessionId: 'sess-a',
+          notes: 'API_TOKEN=tok_live_1234567890',
+          content: 'private material',
+        },
+      })],
+      chatSessionId: 'chat-trace-secret',
+      planId: 'plan-trace-secret',
+    });
+    resolvePlan('plan-trace-secret', { outcome: 'approved' });
+    await pending;
+    const proposed = globalTraceStore.getEvents('chat-trace-secret')
+      .find(event => event.type === 'plan_proposed');
+    const serialized = JSON.stringify(proposed);
+    assert.doesNotMatch(serialized, /tok_live_1234567890|private material/);
+    assert.match(serialized, /redacted/);
+    globalTraceStore.clear('chat-trace-secret');
   });
 });
