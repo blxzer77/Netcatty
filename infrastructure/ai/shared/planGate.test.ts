@@ -256,6 +256,24 @@ describe('planGate', () => {
       assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'anything', command: 'systemctl reload nginx' }), false);
     });
 
+    it('stops covering a plan when its target identity changes', async () => {
+      let changed = false;
+      const pending = proposePlan({
+        goal: 'install nginx',
+        steps: [step()],
+        chatSessionId,
+        planId: 'plan-target-identity',
+        validateExecution: () => changed ? 'host identity changed' : null,
+      });
+      resolvePlan('plan-target-identity', { outcome: 'approved' });
+      await pending;
+      changed = true;
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', {
+        sessionId: 'sess-a',
+        command: 'systemctl reload nginx',
+      }), false);
+    });
+
     it('covers nothing for steps without a tool name or on other sessions', async () => {
       const pending = proposePlan({
         goal: 'vague',

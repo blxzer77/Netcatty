@@ -184,11 +184,29 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
       sessionId: session.sessionId,
       hostId: session.hostId,
     })),
-    readNotes: async (hostId) => {
-      const result = await netcattyBridge.aiCapability?.('vault/host/notes/get', { hostId }, sessionId);
-      if (!result || typeof result !== 'object' || 'error' in result) return null;
-      const notes = (result as { notes?: unknown }).notes;
-      return typeof notes === 'string' ? notes : null;
+    signal,
+    readNotes: async (hostId, abortSignal) => {
+      if (abortSignal?.aborted) return null;
+      const request = netcattyBridge.aiCapability?.('vault/host/notes/get', { hostId }, sessionId);
+      if (!request) return null;
+      let onAbort: (() => void) | undefined;
+      const cancelled = abortSignal
+        ? new Promise<unknown>(resolve => {
+            onAbort = () => {
+              if (sessionId) void netcattyBridge.aiSetChatSessionCancelled?.(sessionId, true);
+              resolve(null);
+            };
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+          })
+        : null;
+      try {
+        const result = await (cancelled ? Promise.race([request, cancelled]) : request);
+        if (!result || typeof result !== 'object' || 'error' in result) return null;
+        const notes = (result as { notes?: unknown }).notes;
+        return typeof notes === 'string' ? notes : null;
+      } finally {
+        if (onAbort) abortSignal?.removeEventListener('abort', onAbort);
+      }
     },
   });
 

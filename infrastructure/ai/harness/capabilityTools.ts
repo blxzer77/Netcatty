@@ -502,6 +502,59 @@ async function prepareMachineNotesWrite(
   };
 }
 
+interface PlanTargetIdentity {
+  sessionId: string;
+  hostId: string;
+  hostname: string;
+  protocol?: string;
+}
+
+function capturePlanTargetIdentities(
+  steps: readonly PlanStep[],
+  context: ExecutorContext,
+): PlanTargetIdentity[] {
+  const sessionIds = new Set(steps.flatMap(step => [
+    ...(step.sessionId ? [step.sessionId] : []),
+    ...(step.sessionIds ?? []),
+  ]));
+  for (const step of steps) {
+    const hostId = typeof step.args?.hostId === 'string' ? step.args.hostId : undefined;
+    if (!hostId) continue;
+    for (const session of context.sessions) {
+      if (session.connected && session.hostId === hostId) sessionIds.add(session.sessionId);
+    }
+  }
+  return [...sessionIds].flatMap(sessionId => {
+    const session = context.sessions.find(entry => entry.sessionId === sessionId);
+    return session
+      ? [{
+          sessionId,
+          hostId: session.hostId,
+          hostname: session.hostname.trim().toLowerCase(),
+          ...(session.protocol ? { protocol: session.protocol.toLowerCase() } : {}),
+        }]
+      : [];
+  });
+}
+
+function validatePlanTargetIdentities(
+  identities: readonly PlanTargetIdentity[],
+  context: ExecutorContext,
+): string | null {
+  for (const identity of identities) {
+    const current = context.sessions.find(entry => entry.sessionId === identity.sessionId);
+    if (!current || !current.connected) return `Plan target session "${identity.sessionId}" changed or disconnected.`;
+    if (
+      current.hostId !== identity.hostId
+      || current.hostname.trim().toLowerCase() !== identity.hostname
+      || (current.protocol ?? '').toLowerCase() !== (identity.protocol ?? '')
+    ) {
+      return `Plan target session "${identity.sessionId}" changed host identity; submit a new plan.`;
+    }
+  }
+  return null;
+}
+
 function validatePlanTargets(steps: readonly PlanStep[], context: ExecutorContext): string | null {
   const targetSessionIds = steps.flatMap(step => [
     ...(step.sessionId ? [step.sessionId] : []),
@@ -558,8 +611,10 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       const parsedSteps = parsePlanPayload(args.steps);
       if (parsedSteps.error) return { error: parsedSteps.error };
       const steps = parsedSteps.steps ?? [];
-      const initialTargetError = validatePlanTargets(steps, resolveContext());
+      const initialContext = resolveContext();
+      const initialTargetError = validatePlanTargets(steps, initialContext);
       if (initialTargetError) return { error: initialTargetError };
+      const targetIdentities = capturePlanTargetIdentities(steps, initialContext);
 
       const parsedPreconditions = parsePlanPreconditions(args.preconditions);
       if (parsedPreconditions.error) return { error: parsedPreconditions.error };
@@ -605,7 +660,9 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
 
       let backupAccessChecks: ReturnType<typeof verifyBackupAccess>['checks'] | undefined;
       const validateCurrentTargets = () => {
-        const targetError = validatePlanTargets(steps, resolveContext());
+        const currentContext = resolveContext();
+        const targetError = validatePlanTargets(steps, currentContext)
+          ?? validatePlanTargetIdentities(targetIdentities, currentContext);
         return targetError
           ? { outcome: 'denied' as const, note: targetError }
           : undefined;
@@ -664,7 +721,11 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         chatSessionId,
         validateApproval,
         signal: ctx.abortSignal,
-        validateExecution: () => validatePlanTargets(steps, resolveContext()),
+        validateExecution: () => {
+          const currentContext = resolveContext();
+          return validatePlanTargets(steps, currentContext)
+            ?? validatePlanTargetIdentities(targetIdentities, currentContext);
+        },
         // The tool call id doubles as the plan id so a retried submission joins
         // the pending decision instead of raising a second request.
         planId: ctx.toolCallId,

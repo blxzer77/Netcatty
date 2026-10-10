@@ -175,15 +175,18 @@ export function summarizeMachineRecord(record: MachineRecord | null): string | n
  */
 export async function collectMachineRecordSummaries(input: {
   hosts: Array<{ sessionId: string; hostId?: string }>;
-  readNotes: (hostId: string) => Promise<string | null>;
+  readNotes: (hostId: string, signal?: AbortSignal) => Promise<string | null>;
+  signal?: AbortSignal;
 }): Promise<Map<string, string>> {
   const hostIds = new Set(input.hosts.map(host => host.hostId).filter((id): id is string => Boolean(id)));
   const summaries = new Map<string, string>();
-  if (hostIds.size === 0) return summaries;
+  if (hostIds.size === 0 || input.signal?.aborted) return summaries;
 
   await Promise.all([...hostIds].map(async (hostId) => {
     try {
-      const notes = await input.readNotes(hostId);
+      if (input.signal?.aborted) return;
+      const notes = await input.readNotes(hostId, input.signal);
+      if (input.signal?.aborted) return;
       const summary = summarizeMachineRecord(notes ? parseMachineRecord(notes) : null);
       if (summary) summaries.set(hostId, summary);
     } catch {
