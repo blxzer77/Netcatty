@@ -165,6 +165,20 @@ function createCapabilityRpcDispatcher(deps) {
     const scopedParams = trustedChatSessionId
       ? { ...params, chatSessionId: trustedChatSessionId }
       : params;
+    if (
+      capability.policy?.write
+      && typeof scopedParams.sessionId === "string"
+      && (
+        typeof scopedParams.expectedHostId !== "string"
+        || !scopedParams.expectedHostId
+        || typeof scopedParams.expectedHostname !== "string"
+        || !scopedParams.expectedHostname
+        || typeof scopedParams.expectedProtocol !== "string"
+        || !scopedParams.expectedProtocol
+      )
+    ) {
+      return { ok: false, error: "Execution target identity is missing or incomplete; submit a new plan." };
+    }
 
     // Only session.close executes against params.sessionId. host.open instead
     // targets its requested vault host; other vault/script operations must not

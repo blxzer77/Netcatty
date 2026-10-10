@@ -18,8 +18,13 @@ function isNetworkDeviceLike(meta) {
 }
 
 function targetIdentityError(actual, expected) {
-  if (!expected || typeof expected !== "object") return null;
-  if (typeof expected.hostId === "string" && expected.hostId && actual?.hostId !== expected.hostId) {
+  if (!expected || typeof expected !== "object") {
+    return "Execution target identity is missing; submit a new plan.";
+  }
+  if (["hostId", "hostname", "protocol"].some(key => typeof expected[key] !== "string" || !expected[key].trim())) {
+    return "Execution target identity is incomplete; submit a new plan.";
+  }
+  if (actual?.hostId !== expected.hostId) {
     return "Execution target host identity changed; submit a new plan.";
   }
   if (typeof expected.hostname === "string" && expected.hostname) {
@@ -105,6 +110,9 @@ function registerCattyExecHandlers(ctx) {
     // Block execution in observer mode (Issue #11)
     if (mcpServerBridge.getPermissionMode() === "observer") {
       return { ok: false, error: "Execution blocked: permission mode is 'observer'" };
+    }
+    if (chatSessionId && (!expectedTarget || typeof expectedTarget !== "object")) {
+      return { ok: false, error: "Execution target identity is missing; submit a new plan." };
     }
     const session = sessions?.get(sessionId);
     if (!session) {

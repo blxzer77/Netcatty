@@ -69,6 +69,8 @@ interface ApprovedPlanScope {
   nextStepIndex: number;
   /** Any failed, cancelled, or diverged write stops the remaining grant. */
   stopped?: boolean;
+  /** Prevents concurrent calls from claiming the same approved step twice. */
+  claimedStepIndex?: number;
 }
 
 const pendingPlans = new Map<string, PendingPlanEntry>();
@@ -487,7 +489,7 @@ export function isToolCoveredByApprovedPlan(
     : [];
 
   for (const scope of scopes) {
-    if (scope.stopped || scope.validateExecution?.()) continue;
+    if (scope.stopped || scope.claimedStepIndex !== undefined || scope.validateExecution?.()) continue;
     // Plans submitted by Catty contain executable write steps only. A read step
     // must not be silently skipped because doing so would weaken plan order.
     const step = scope.steps[scope.nextStepIndex];
@@ -503,9 +505,27 @@ export function isToolCoveredByApprovedPlan(
       comparableArgs,
     )) continue;
 
+    scope.claimedStepIndex = scope.nextStepIndex;
     return true;
   }
   return false;
+}
+
+function matchesCurrentPlanStep(
+  scope: ApprovedPlanScope,
+  toolName: string,
+  comparableArgs: Record<string, unknown>,
+): boolean {
+  if (scope.stopped || scope.validateExecution?.() || scope.claimedStepIndex !== scope.nextStepIndex) return false;
+  const step = scope.steps[scope.nextStepIndex];
+  if (!step || step.toolName !== toolName) return false;
+  const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
+  const sessionIds = Array.isArray(comparableArgs.sessionIds)
+    ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) return false;
+  const expectedArgs = expectedPlanArgs(step);
+  return Boolean(expectedArgs && samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs));
 }
 
 /** Commit the current approved step only after its tool handler succeeded. */
@@ -518,18 +538,10 @@ export function commitToolCoveredByApprovedPlan(
   const scopes = approvedPlansByChatSession.get(chatSessionId);
   if (!scopes?.length) return false;
   const comparableArgs = normalizePlanArgs(toolName, args);
-  const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
-  const sessionIds = Array.isArray(comparableArgs.sessionIds)
-    ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
-    : [];
   for (const scope of scopes) {
-    if (scope.stopped || scope.validateExecution?.()) continue;
-    const step = scope.steps[scope.nextStepIndex];
-    if (!step || step.toolName !== toolName) continue;
-    if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) continue;
-    const expectedArgs = expectedPlanArgs(step);
-    if (!expectedArgs || !samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs)) continue;
+    if (!matchesCurrentPlanStep(scope, toolName, comparableArgs)) continue;
     scope.nextStepIndex += 1;
+    delete scope.claimedStepIndex;
     return true;
   }
   return false;
@@ -545,18 +557,10 @@ export function failToolCoveredByApprovedPlan(
   const scopes = approvedPlansByChatSession.get(chatSessionId);
   if (!scopes?.length) return false;
   const comparableArgs = normalizePlanArgs(toolName, args);
-  const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
-  const sessionIds = Array.isArray(comparableArgs.sessionIds)
-    ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
-    : [];
   for (const scope of scopes) {
-    if (scope.stopped || scope.validateExecution?.()) continue;
-    const step = scope.steps[scope.nextStepIndex];
-    if (!step || step.toolName !== toolName) continue;
-    if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) continue;
-    const expectedArgs = expectedPlanArgs(step);
-    if (!expectedArgs || !samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs)) continue;
+    if (!matchesCurrentPlanStep(scope, toolName, comparableArgs)) continue;
     scope.stopped = true;
+    delete scope.claimedStepIndex;
     return true;
   }
   return false;

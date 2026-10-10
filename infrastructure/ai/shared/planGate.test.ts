@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   cancelPlanTimeout,
   clearApprovedPlans,
+  commitToolCoveredByApprovedPlan,
+  failToolCoveredByApprovedPlan,
   clearChatSessionPlans,
   isToolCoveredByApprovedPlan,
   onPlanCleared,
@@ -242,6 +244,30 @@ describe('planGate', () => {
       assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a', command: 'rm -rf /' }), false);
       assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-b', command: 'systemctl reload nginx' }), false);
       assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'sftp_delete', { sessionId: 'sess-a' }), false);
+    });
+
+    it('claims each approved step once and stops after a failed execution', async () => {
+      const pending = proposePlan({
+        goal: 'reload and verify',
+        steps: [
+          step(),
+          step({ id: 's2', title: 'reload again', command: 'systemctl reload haproxy' }),
+        ],
+        chatSessionId,
+        planId: 'plan-step-lifecycle',
+      });
+      resolvePlan('plan-step-lifecycle', { outcome: 'approved' });
+      await pending;
+
+      const firstArgs = { sessionId: 'sess-a', command: 'systemctl reload nginx' };
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', firstArgs), true);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', firstArgs), false);
+      assert.equal(commitToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', firstArgs), true);
+
+      const secondArgs = { sessionId: 'sess-a', command: 'systemctl reload haproxy' };
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', secondArgs), true);
+      assert.equal(failToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', secondArgs), true);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', secondArgs), false);
     });
 
     it('does not cover a call when the approved step omitted its session', async () => {
