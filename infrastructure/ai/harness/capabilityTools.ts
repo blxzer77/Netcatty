@@ -15,6 +15,8 @@ import {
   type ToolExecResult,
 } from '../shared/toolExecutors';
 import { reserveSessionSlot } from '../shared/sessionExecutionQueue';
+import { proposePlan } from '../shared/planGate';
+import type { PlanPreconditionResult, PlanStep } from './types';
 import { fitTerminalExecuteResultForModel } from './terminalCompression';
 import { fitLargeToolResultForModel } from './toolResultFitting';
 import { redactSecretsForModel } from './modelSecretRedaction';
@@ -200,6 +202,63 @@ interface LocalExecutionContext {
   toolOutputStore?: ToolOutputStore;
   toolResultDedup?: ToolResultDedup;
   chatSessionId?: string;
+  toolCallId?: string;
+  abortSignal?: AbortSignal;
+}
+
+/**
+ * Parse the plan payload the model submitted. The tool schema carries `steps`
+ * and `preconditions` as JSON strings because the generated shapes are scalar
+ * fields, so the plan is decoded here.
+ */
+function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: PlanPreconditionResult[]; error?: string } {
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return { error: 'Plan steps must be a JSON array of step objects.' };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return { error: 'A plan needs at least one step.' };
+  }
+  const steps = parsed.map((entry, index) => {
+    const step = (entry ?? {}) as Partial<PlanStep>;
+    return {
+      id: typeof step.id === 'string' && step.id.trim() ? step.id : `step-${index + 1}`,
+      title: typeof step.title === 'string' && step.title.trim()
+        ? step.title
+        : String(step.command ?? `Step ${index + 1}`),
+      ...(typeof step.toolName === 'string' ? { toolName: step.toolName } : {}),
+      ...(typeof step.sessionId === 'string' ? { sessionId: step.sessionId } : {}),
+      ...(typeof step.command === 'string' ? { command: step.command } : {}),
+      ...(typeof step.reason === 'string' ? { reason: step.reason } : {}),
+      ...(typeof step.verification === 'string' ? { verification: step.verification } : {}),
+      ...(typeof step.risk === 'string' ? { risk: step.risk as PlanStep['risk'] } : {}),
+    } satisfies PlanStep;
+  });
+  return { steps };
+}
+
+function parsePlanPreconditions(raw: unknown): { preconditions?: PlanPreconditionResult[]; error?: string } {
+  if (raw === undefined || raw === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return { error: 'Plan preconditions must be a JSON array of {id, label, ok, detail?} objects.' };
+  }
+  if (!Array.isArray(parsed)) return { error: 'Plan preconditions must be a JSON array.' };
+  return {
+    preconditions: parsed.map((entry) => {
+      const precondition = (entry ?? {}) as Partial<PlanPreconditionResult>;
+      return {
+        id: String(precondition.id ?? 'check'),
+        label: String(precondition.label ?? precondition.id ?? 'check'),
+        ok: precondition.ok === true,
+        ...(typeof precondition.detail === 'string' ? { detail: precondition.detail } : {}),
+      };
+    }),
+  };
 }
 
 async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<unknown> {
@@ -207,6 +266,63 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
   const resolveContext = () => (typeof deps.context === 'function' ? deps.context() : deps.context);
 
   switch (spec.capabilityId) {
+    case 'harness.plan.submit': {
+      // A plan is the unit of approval: nothing executes until the user
+      // approves this one artifact, and the approved steps then cover the tool
+      // calls they name (see cattyToolApproval).
+      if (deps.permissionMode === 'observer') {
+        return {
+          error: 'Observer mode is read-only, so a plan that changes a host cannot run. Switch to confirm or auto in Settings → AI → Safety, then ask again.',
+        };
+      }
+      if (ctx.abortSignal?.aborted) {
+        return { error: 'Tool call cancelled before it could start.' };
+      }
+
+      const goal = typeof args.goal === 'string' ? args.goal.trim() : '';
+      if (!goal) return { error: 'A plan needs a one-sentence goal.' };
+
+      const parsedSteps = parsePlanPayload(args.steps);
+      if (parsedSteps.error) return { error: parsedSteps.error };
+      const steps = parsedSteps.steps ?? [];
+
+      const parsedPreconditions = parsePlanPreconditions(args.preconditions);
+      if (parsedPreconditions.error) return { error: parsedPreconditions.error };
+      const preconditions = parsedPreconditions.preconditions;
+      const unmet = (preconditions ?? []).filter(precondition => !precondition.ok);
+      if (unmet.length > 0) {
+        return {
+          error: `Plan blocked by unmet preconditions: ${unmet.map(p => p.label).join('; ')}. Run the checks, resolve them, then propose the plan again.`,
+          blockedPreconditions: unmet,
+        };
+      }
+
+      const decision = await proposePlan({
+        goal,
+        steps,
+        preconditions,
+        chatSessionId,
+        // The tool call id doubles as the plan id so a retried submission joins
+        // the pending decision instead of raising a second request.
+        planId: ctx.toolCallId,
+      });
+
+      if (decision.outcome !== 'approved') {
+        return {
+          approved: false,
+          reason: decision.note ?? (decision.outcome === 'denied'
+            ? 'The user denied the plan.'
+            : 'Plan approval timed out.'),
+        };
+      }
+
+      return {
+        approved: true,
+        planId: ctx.toolCallId,
+        steps: steps.map(step => ({ id: step.id, title: step.title, ...(step.toolName ? { toolName: step.toolName } : {}) })),
+        instruction: 'Plan approved. Execute the steps in order and verify each one before moving on. If reality diverges from the plan, stop and tell the user instead of continuing.',
+      };
+    }
     case 'harness.tool_output.read': {
       const { handleId, mode, maxChars, offset, query } = args as {
         handleId: string;
@@ -388,12 +504,18 @@ export function resolveSessionQueueKeyForTests(
 function createCatalogTool(spec: CattyToolSpec) {
   const inputSchema = buildZodObject(spec.inputShape);
 
-  return tool({
-    description: spec.description,
-    inputSchema,
-    contextSchema: cattyToolContextSchema,
-    execute: async (args, { toolCallId: _toolCallId, abortSignal, context }) => {
-      const toolContext = context as CattyToolContext;
+  // The zod schema is built at runtime from the catalog, so the AI SDK cannot
+  // infer this tool's input type at compile time. Declare the signature here and
+  // cast it at the `tool()` call instead of leaking `any` through the body.
+  const execute = async (
+    args: Record<string, unknown>,
+    { toolCallId, abortSignal, context }: {
+      toolCallId: string;
+      abortSignal?: AbortSignal;
+      context: CattyToolContext;
+    },
+  ): Promise<unknown> => {
+    const toolContext = context;
       const deps = toolDepsFromContext(toolContext);
       const { toolOutputStore, toolResultDedup } = toolContext;
 
@@ -483,6 +605,8 @@ function createCatalogTool(spec: CattyToolSpec) {
             toolOutputStore,
             toolResultDedup,
             chatSessionId: deps.chatSessionId,
+            toolCallId,
+            abortSignal,
           });
           return fitCapabilityResultForModel(
             result,
@@ -698,7 +822,13 @@ function createCatalogTool(spec: CattyToolSpec) {
       } finally {
         slot?.release();
       }
-    },
+  }
+
+  return tool({
+    description: spec.description,
+    inputSchema,
+    contextSchema: cattyToolContextSchema,
+    execute: execute as Parameters<typeof tool>[0]['execute'],
   });
 }
 
@@ -761,23 +891,30 @@ export function createCattyToolsFromCatalog(
   return { tools: catalogTools, toolsContext };
 }
 
-/** Test helper: attach shared context when calling tool.execute directly. */
+/**
+ * Test helper: attach shared context when calling tool.execute directly.
+ *
+ * The returned `execute` accepts `unknown` because the catalog tools' input
+ * types are built at runtime, which the compiler sees as `never`.
+ */
 export function withCattyToolContext<T extends { execute: (...args: never[]) => unknown }>(
   toolInstance: T,
   context: CattyToolContext,
   toolCallId = 'test-call',
-): T {
-  const original = toolInstance.execute.bind(toolInstance);
+): T & { execute: (input: unknown, options?: Record<string, unknown>) => unknown } {
+  const exec = (toolInstance as unknown as {
+    execute: (input: unknown, options: Record<string, unknown>) => unknown;
+  }).execute.bind(toolInstance);
   return {
     ...toolInstance,
-    execute: (input: Parameters<T['execute']>[0], options?: Partial<Parameters<T['execute']>[1]>) =>
-      original(input, {
+    execute: (input: unknown, options?: Record<string, unknown>) =>
+      exec(input, {
         toolCallId,
         messages: [],
         ...options,
         context,
-      } as Parameters<T['execute']>[1]),
-  } as T;
+      }),
+  } as T & { execute: (input: unknown, options?: Record<string, unknown>) => unknown };
 }
 
 export { tryFetchHostEnvironment };

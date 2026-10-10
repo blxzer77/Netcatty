@@ -14,6 +14,7 @@ import type {
 import { globalTwoPassCompactionCache } from './twoPassCompaction';
 import { redactSecretsForModel, redactSecretsInValueForModel } from './modelSecretRedaction';
 import { globalTerminalMonitorGuard } from './terminalMonitorGuard';
+import { clearChatSessionPlans } from '../shared/planGate';
 
 let turnCounter = 0;
 
@@ -75,6 +76,7 @@ export class AgentRuntime {
     this.traceStore.clear(chatSessionId);
     globalTwoPassCompactionCache.clear(chatSessionId);
     globalTerminalMonitorGuard.clearPrefix(`${chatSessionId}:`);
+    clearChatSessionPlans(chatSessionId);
   }
 
   clearTerminalSession(terminalSessionId: string): void {

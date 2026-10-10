@@ -31,6 +31,7 @@ import {
 } from '../cattyRuntime';
 import { computeTotalInputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../contextBudget';
 import { clearChatSessionCancelled } from '../agentStop';
+import { clearApprovedPlans } from '../shared/planGate';
 import { isRequestTooLargeError } from '../../errorClassifier';
 import { getNetcattyBridge, generateId, resolveUserSkillsContext } from '../../aiChatStreamingSupport';
 import {
@@ -558,6 +559,8 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     ui.updateLastMessage(sessionId, msg => msg.statusText ? { ...msg, statusText: '' } : msg);
     ui.setStreamingForScope(sessionId, false);
     context.autoTitleSession(sessionId, context.titleText ?? trimmed);
+    // Plan scope grants are per turn: a later turn must ask again.
+    clearApprovedPlans(sessionId);
   }
 }
 

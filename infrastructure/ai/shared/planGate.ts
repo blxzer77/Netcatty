@@ -50,6 +50,8 @@ interface PendingPlanEntry {
   resolve: (decision: PlanDecision) => void;
   /** Clears the idle auto-deny timer without resolving the plan. */
   cancelTimeout?: () => void;
+  /** Drops the idle timer because the plan already settled. */
+  dispose?: () => void;
 }
 
 interface ApprovedPlanScope {
@@ -141,6 +143,10 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
       }
     };
 
+    const settle = (decision: PlanDecision) => {
+      clearTimer();
+      resolve(decision);
+    };
     const denyTimedOut = () => {
       if (!pendingPlans.has(planId)) return;
       pendingPlans.delete(planId);
@@ -161,7 +167,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
       for (const listener of resolvedListeners) {
         try { listener(planId, decision); } catch { /* ignore listener errors */ }
       }
-      resolve(decision);
+      settle(decision);
     };
 
     const armTimer = (ms: number) => {
@@ -175,7 +181,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
 
     pendingPlans.set(planId, {
       plan,
-      resolve,
+      resolve: settle,
       cancelTimeout: () => {
         const remainingHard = hardDeadlineAt - Date.now();
         if (remainingHard <= 0) {
@@ -186,6 +192,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
         // hard deadline.
         armTimer(Math.min(idleMs, remainingHard));
       },
+      dispose: clearTimer,
     });
 
     trace(plan, {
@@ -239,6 +246,7 @@ export function resolvePlan(planId: string, decision: boolean | PlanDecision): v
     return;
   }
   pendingPlans.delete(planId);
+  entry.dispose?.();
   entry.resolve(normalized);
 
   if (normalized.outcome === 'approved') {
@@ -307,6 +315,7 @@ export function clearChatSessionPlans(chatSessionId: string | undefined): void {
     if (entry.plan.chatSessionId !== chatSessionId) continue;
     dropped.push(planId);
     pendingPlans.delete(planId);
+    entry.dispose?.();
     entry.resolve({ outcome: 'denied', note: 'Chat session was stopped.' });
   }
   approvedPlansByChatSession.delete(chatSessionId);
@@ -345,6 +354,7 @@ export function replayPendingPlans(listener: PlanProposedListener): void {
 /** Test-only: drop all plan state. */
 export function resetPlanGateForTests(): void {
   for (const [, entry] of pendingPlans) {
+    entry.dispose?.();
     entry.resolve({ outcome: 'denied', note: 'Plan gate reset.' });
   }
   pendingPlans.clear();

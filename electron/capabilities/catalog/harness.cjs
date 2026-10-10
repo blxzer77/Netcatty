@@ -80,6 +80,25 @@ const HARNESS_CAPABILITIES = [
     },
   },
   {
+    id: "harness.plan.submit",
+    agentKinds: ["sidebar"],
+    domain: "harness",
+    status: CAPABILITY_STATUS.IMPLEMENTED,
+    description: "Propose a plan of server operations for the user to approve before anything executes.",
+    policy: {
+      write: false,
+      sensitiveRead: false,
+      longRunning: false,
+      requiresChatSession: true,
+      bypassesObserverBlock: false,
+      bypassesApproval: true,
+      bypassesChatCancel: true,
+    },
+    surfaces: {
+      catty: { toolName: "submit_plan" },
+    },
+  },
+  {
     id: "harness.web.search",
     domain: "harness",
     status: CAPABILITY_STATUS.IMPLEMENTED,

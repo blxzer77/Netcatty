@@ -179,7 +179,7 @@ test("listCattyToolSpecs includes renderer harness tools and the shared terminal
   const specs = listCattyToolSpecs();
   assert.ok(specs.length >= 40);
   const harness = specs.filter((spec) => spec.capabilityId.startsWith("harness."));
-  assert.equal(harness.length, 6);
+  assert.equal(harness.length, 7);
   for (const spec of harness) {
     const screenRead = spec.capabilityId === "harness.terminal.read_context";
     assert.equal(spec.localExecution, !screenRead);
@@ -189,6 +189,15 @@ test("listCattyToolSpecs includes renderer harness tools and the shared terminal
   assert.ok(harnessIds.includes("harness.tool_output.read"));
   assert.ok(harnessIds.includes("harness.workspace.get_info"));
   assert.ok(harnessIds.includes("harness.terminal.read_context"));
+  // The plan gate is a sidebar-only entry: no MCP or CLI surface, because
+  // there is no chat session elsewhere to approve against.
+  assert.ok(harnessIds.includes("harness.plan.submit"));
+  const mcpIds = listMcpTools().map((tool) => tool.capabilityId);
+  assert.ok(!mcpIds.includes("harness.plan.submit"));
+  const planEntry = ALL_CAPABILITIES.find((cap) => cap.id === "harness.plan.submit");
+  assert.ok(planEntry, "harness.plan.submit must exist in the catalog");
+  assert.deepEqual(Object.keys(planEntry.surfaces), ["catty"]);
+  assert.ok(!CATTY_CAPABILITY_DENYLIST.has("harness.plan.submit"));
 });
 
 test("only terminal reading is exposed from harness on MCP", () => {

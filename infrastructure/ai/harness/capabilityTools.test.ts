@@ -5,6 +5,11 @@ import {
   resolveSessionQueueKeyForTests,
   withCattyToolContext,
 } from './capabilityTools';
+import {
+  isToolCoveredByApprovedPlan,
+  resetPlanGateForTests,
+  resolvePlan,
+} from '../shared/planGate';
 import { ToolOutputStore } from './toolOutputStore';
 import { buildTerminalWriteFingerprint, ToolResultDedup } from './toolResultDedup';
 import { collectPreservedTerminalWriteFingerprints } from './turnDrivers/cattyMessageBuilder';
@@ -639,5 +644,118 @@ describe('capabilityTools terminal polling', () => {
     const result = await poll.execute({ jobId: 'quiet-monitor-job', offset: 0 }) as { output: string };
 
     assert.equal(result.output, 'first new line');
+  });
+});
+
+describe('capabilityTools submit_plan', () => {
+  const planTools = (permissionMode: 'observer' | 'confirm' | 'auto', chatSessionId: string) =>
+    createCattyToolsFromCatalog(
+      { aiCapability: async () => ({ ok: true }) },
+      { sessions: [] },
+      [],
+      permissionMode,
+      undefined,
+      chatSessionId,
+    );
+
+  const steps = JSON.stringify([{
+    id: 'check-disk',
+    title: 'Check disk usage',
+    toolName: 'terminal_execute',
+    sessionId: 'session-a',
+    command: 'df -h /',
+    reason: 'Disk full is the suspected cause',
+    verification: 'Reported use is below 90%',
+    risk: 'read',
+  }]);
+
+  it('refuses plans in observer mode', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('observer', 'chat-plan-observer');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-observer',
+    ).execute({ goal: 'check disk', steps }) as { error: string };
+
+    assert.match(result.error, /Observer mode is read-only/);
+  });
+
+  it('blocks a plan whose preconditions are unmet', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-precondition');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-precondition',
+    ).execute({
+      goal: 'restart the proxy service',
+      steps,
+      preconditions: JSON.stringify([
+        { id: 'backup-connection', label: 'second live connection to the host', ok: false, detail: 'only one session in scope' },
+      ]),
+    }) as { error: string; blockedPreconditions: Array<{ id: string }> };
+
+    assert.match(result.error, /blocked by unmet preconditions/);
+    assert.equal(result.blockedPreconditions.length, 1);
+  });
+
+  it('reports rejection with the user reason and grants nothing', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-denied');
+    const pending = withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-denied',
+    ).execute({ goal: 'check disk', steps }) as Promise<Record<string, unknown>>;
+    // The AI SDK tool wrapper awaits before running execute, so let it reach the
+    // plan gate before answering.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    resolvePlan('plan-denied', { outcome: 'denied', note: 'not now' });
+    const result = await pending;
+
+    assert.equal(result.approved, false);
+    assert.equal(result.reason, 'not now');
+    assert.equal(
+      isToolCoveredByApprovedPlan('chat-plan-denied', 'terminal_execute', { sessionId: 'session-a' }),
+      false,
+    );
+  });
+
+  it('returns the approved plan and scopes its steps to the chat session', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-approved');
+    const pending = withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-approved',
+    ).execute({ goal: 'check disk', steps }) as Promise<Record<string, unknown>>;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    resolvePlan('plan-approved', { outcome: 'approved' });
+    const result = await pending;
+
+    assert.equal(result.approved, true);
+    assert.equal(result.planId, 'plan-approved');
+    assert.match(String(result.instruction), /Plan approved/);
+    assert.equal(
+      isToolCoveredByApprovedPlan('chat-plan-approved', 'terminal_execute', { sessionId: 'session-a' }),
+      true,
+    );
+    assert.equal(
+      isToolCoveredByApprovedPlan('chat-plan-approved', 'terminal_execute', { sessionId: 'session-b' }),
+      false,
+    );
+  });
+
+  it('rejects a steps payload that is not a JSON array of steps', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-bad-json');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-bad-json',
+    ).execute({ goal: 'check disk', steps: '{not json' }) as { error: string };
+
+    assert.match(result.error, /JSON array/);
   });
 });

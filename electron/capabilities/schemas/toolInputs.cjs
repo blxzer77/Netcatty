@@ -395,6 +395,23 @@ const TOOL_INPUT_FIELDS = Object.freeze({
     startLine: { type: "number", optional: true, description: "Zero-based terminal buffer line to start from when range is lines." },
     maxLines: { type: "number", optional: true, description: "Maximum terminal rows to return. Defaults to 80, capped at 300." },
   },
+  "harness.plan.submit": {
+    goal: {
+      type: "string",
+      description: "One sentence: what the user asked for and what the plan will accomplish.",
+    },
+    steps: {
+      type: "string",
+      description:
+        "JSON array of step objects, one per action, in execution order. Each object: id (short, stable), title (imperative), toolName (the tool the step will call), sessionId (target session when the step operates on a host), command (exact command or payload), reason (why this step is needed), verification (how the step proves it worked), risk (read|low|high).",
+    },
+    preconditions: {
+      type: "string",
+      optional: true,
+      description:
+        "JSON array of prerequisite checks the plan depends on, in the form [{id, label, ok, detail?}]. Every precondition must be ok=true; a false precondition blocks the plan. Use it for backup-access checks before anything that could break the proxy path: a second live connection to the host exists, an alternate route was actually tested, the current configuration was backed up, and the recovery procedure is written down.",
+    },
+  },
   "harness.web.search": {
     query: { type: "string", description: "The search query to look up on the web." },
     maxResults: { type: "number", optional: true, description: "Maximum number of search results to return." },

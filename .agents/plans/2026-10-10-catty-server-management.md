@@ -146,7 +146,7 @@ green; the plan document is the only thing that tracks the whole arc.
 - [x] 需求逼问与定义（见 note）
 - [x] 计划文档建立
 - [x] Phase 1 事件协议与 planGate
-- [ ] Phase 1 `submit_plan` 工具与提示词
+- [x] Phase 1 `submit_plan` 工具与提示词
 - [ ] Phase 1 计划卡片 UI
 - [ ] Phase 2 工具面收敛
 - [ ] Phase 3 跨机协调与写锁

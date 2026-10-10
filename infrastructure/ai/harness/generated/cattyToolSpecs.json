@@ -2335,6 +2335,39 @@
     }
   },
   {
+    "capabilityId": "harness.plan.submit",
+    "toolName": "submit_plan",
+    "rpcMethod": null,
+    "localExecution": true,
+    "description": "Propose a plan of server operations for the user to approve before anything executes.",
+    "inputShape": {
+      "goal": {
+        "type": "string",
+        "optional": false,
+        "description": "One sentence: what the user asked for and what the plan will accomplish."
+      },
+      "steps": {
+        "type": "string",
+        "optional": false,
+        "description": "JSON array of step objects, one per action, in execution order. Each object: id (short, stable), title (imperative), toolName (the tool the step will call), sessionId (target session when the step operates on a host), command (exact command or payload), reason (why this step is needed), verification (how the step proves it worked), risk (read|low|high)."
+      },
+      "preconditions": {
+        "type": "string",
+        "optional": true,
+        "description": "JSON array of prerequisite checks the plan depends on, in the form [{id, label, ok, detail?}]. Every precondition must be ok=true; a false precondition blocks the plan. Use it for backup-access checks before anything that could break the proxy path: a second live connection to the host exists, an alternate route was actually tested, the current configuration was backed up, and the recovery procedure is written down."
+      }
+    },
+    "policy": {
+      "write": false,
+      "sensitiveRead": false,
+      "longRunning": false,
+      "requiresChatSession": true,
+      "bypassesObserverBlock": false,
+      "bypassesApproval": true,
+      "bypassesChatCancel": true
+    }
+  },
+  {
     "capabilityId": "harness.web.search",
     "toolName": "web_search",
     "rpcMethod": null,

@@ -1,6 +1,7 @@
 import type { ToolApprovalConfiguration } from 'ai';
 import type { AIPermissionMode } from '../types';
 import { requestApproval as defaultRequestApproval } from '../shared/approvalGate';
+import { isToolCoveredByApprovedPlan } from '../shared/planGate';
 import { resolveCapabilityId } from './permissionGrants';
 import cattyToolSpecs from './generated/cattyToolSpecs.json';
 
@@ -41,6 +42,8 @@ export function buildCattyToolApproval(input: {
       return undefined;
     }
 
+    const args = (toolCall.input ?? {}) as Record<string, unknown>;
+
     if (permissionMode === 'observer' && !spec.policy.bypassesObserverBlock) {
       return { type: 'denied' as const, reason: 'Observer mode blocks write operations.' };
     }
@@ -49,7 +52,13 @@ export function buildCattyToolApproval(input: {
       return undefined;
     }
 
-    const args = (toolCall.input ?? {}) as Record<string, unknown>;
+    // An approved plan is the unit of consent for the steps it names. A tool
+    // call that matches one of those steps (same tool, same target session)
+    // must not ask again; anything the plan did not name still goes through
+    // the per-call gate.
+    if (isToolCoveredByApprovedPlan(chatSessionId, toolCall.toolName, args)) {
+      return undefined;
+    }
     const approved = await requestApproval(
       toolCall.toolCallId,
       toolCall.toolName,

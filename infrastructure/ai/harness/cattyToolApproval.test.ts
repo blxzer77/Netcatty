@@ -1,6 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCattyToolApproval } from './cattyToolApproval';
+import { proposePlan, resetPlanGateForTests, resolvePlan } from '../shared/planGate';
+import type { PlanStep } from './types';
 
 describe('buildCattyToolApproval', () => {
   it('auto-approves read-only tools', async () => {
@@ -94,5 +96,62 @@ describe('buildCattyToolApproval', () => {
       type: 'denied',
       reason: 'User denied tool execution.',
     });
+  });
+});
+
+describe('buildCattyToolApproval with an approved plan', () => {
+  beforeEach(() => {
+    resetPlanGateForTests();
+  });
+
+  const approvePlan = async (planId: string, steps: PlanStep[]) => {
+    const chatSessionId = 'chat-plan';
+    const pending = proposePlan({ goal: 'test plan', steps, chatSessionId, planId });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    resolvePlan(planId, { outcome: 'approved' });
+    await pending;
+  };
+
+  it('skips the per-call prompt for a tool call the approved plan named', async () => {
+    await approvePlan('plan-call-6', [
+      { id: 's1', title: 'write file', toolName: 'sftp_write_file', sessionId: 'session-a' },
+    ]);
+    let asked = false;
+    const approval = buildCattyToolApproval({
+      permissionMode: 'confirm',
+      chatSessionId: 'chat-plan',
+      requestApproval: async () => { asked = true; return false; },
+    });
+    const result = await approval({
+      toolCall: {
+        toolCallId: 'call-6',
+        toolName: 'sftp_write_file',
+        input: { sessionId: 'session-a', path: '/tmp/x', content: 'hi' },
+      },
+    } as Parameters<typeof approval>[0]);
+
+    assert.equal(asked, false);
+    assert.equal(result, undefined);
+  });
+
+  it('still asks for a call the plan did not name', async () => {
+    await approvePlan('plan-call-7', [
+      { id: 's1', title: 'write file', toolName: 'sftp_write_file', sessionId: 'session-a' },
+    ]);
+    let asked = false;
+    const approval = buildCattyToolApproval({
+      permissionMode: 'confirm',
+      chatSessionId: 'chat-plan',
+      requestApproval: async () => { asked = true; return true; },
+    });
+    await approval({
+      toolCall: {
+        toolCallId: 'call-7',
+        toolName: 'sftp_write_file',
+        input: { sessionId: 'session-b', path: '/tmp/y', content: 'ho' },
+      },
+    } as Parameters<typeof approval>[0]);
+
+    assert.equal(asked, true);
   });
 });
