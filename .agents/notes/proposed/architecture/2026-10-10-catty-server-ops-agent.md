@@ -56,6 +56,9 @@ and transport as the named task classes. Keep the existing cacheable-prefix inva
 - *Change* (write): `terminal.execute`, `terminal.start`, `terminal.stop`, `sftp.upload`,
   `sftp.write_file`, `sftp.mkdir`, `sftp.rename`, `sftp.delete`, `sftp.chmod`,
   `sftp.download`, `portforward.start`, `portforward.stop`.
+- *Coordinate*: `harness.terminal.batch` (one command on several hosts, each host reported
+  on its own, failure isolated) and `harness.machines.compare` (the same read on several
+  hosts plus a deterministic agree/differ conclusion).
 - *Machine record*: read and update host notes so the agent's cross-session memory lives in
   an editable place the user owns.
 - *Loop*: `harness.plan.submit`, the tool the agent uses to propose work for approval.
@@ -65,7 +68,7 @@ and transport as the named task classes. Keep the existing cacheable-prefix inva
 
 Exposure is decided in `electron/capabilities/catalog/` through a new
 `agentToolsets: ["server-ops"]` marker that `toolSurfaces.cjs` gates the sidebar agent on —
-never by filtering in the renderer. The sidebar set is 28 tools, down from 73.
+never by filtering in the renderer. The sidebar set is 30 tools, down from 73.
 
 Two deliberate deviations from the first draft of this list:
 
@@ -87,10 +90,12 @@ the proxy path: verify a second live connection to the target host, test an alte
 route for reachability, back up the affected configuration, and include the recovery
 procedure in the plan. The plan must show the result of each check.
 
-**5. Coordination.** Serialize writes to the same host across every chat session, not just
-within one (today's queue key is `chatSessionId:sessionId`, which leaves two sessions
-racing on the same machine). Batch runs report per-host outcomes and a summary; a failure
-on one host must not stop or corrupt the others.
+**5. Coordination.** Writes to the same host serialize **per host**, not per chat session:
+two panels driving one machine must not interleave. Multi-host runs reuse the exact
+single-host command path (scope check, shell-aware blocklist, bridge call, output fitting,
+write-fingerprint replay), report each host separately so one failure cannot hide the
+others, and reduce a comparison to a small agree/differ artifact instead of N full
+outputs.
 
 **6. Memory.** Machine state, prior actions, and conclusions live in vault host notes,
 written by the agent and editable by the user; secrets are redacted before anything
@@ -119,7 +124,7 @@ and does not want to operate the machine by hand.
 
 - The prompt states the server-management purpose first; the static prefix stays stable
   across turns for the same configuration.
-- The sidebar tool set is derived from the catalog, contains exactly the 28
+- The sidebar tool set is derived from the catalog, contains exactly the 30
   server-ops tools (golden list in `toolSurfaces.test.cjs`), and holds no Vault capability
   beyond host notes; `npm run generate:capability-tools` plus
   `git diff --exit-code infrastructure/ai/harness/generated/cattyToolSpecs.json` is clean.
@@ -130,7 +135,8 @@ and does not want to operate the machine by hand.
 - The backup-access precondition runs before proxy-affecting actions, is visible in the
   plan, and blocks the action when it fails.
 - Writes to the same host serialize across chat sessions; a batched run reports per-host
-  results and survives single-host failures.
+  results and survives single-host failures; a comparison returns a deterministic
+  agree/differ conclusion with the differing lines, not N full outputs.
 - Machine state and prior actions are readable in a new chat session and editable by the
   user in host notes; secrets never reach the model.
 - A fixed smoke set passes: single-host diagnosis, a change with verification, an

@@ -28,7 +28,7 @@ describe('capabilityTools session queue keys', () => {
     assert.equal(key, null);
   });
 
-  it('still serializes terminal.execute on the same session', () => {
+  it('still serializes terminal.execute on the same session across chat sessions', () => {
     const key = resolveSessionQueueKeyForTests(
       {
         capabilityId: 'terminal.execute',
@@ -36,6 +36,31 @@ describe('capabilityTools session queue keys', () => {
         policy: { write: true, bypassesApproval: false },
       },
       { sessionId: 'session-a', command: 'ls' },
+      'chat-1',
+    );
+    // The host write key ignores the chat session on purpose: two panels
+    // driving the same machine must not interleave their writes.
+    assert.equal(key, 'session:session-a');
+    const otherPanel = resolveSessionQueueKeyForTests(
+      {
+        capabilityId: 'terminal.execute',
+        toolName: 'terminal_execute',
+        policy: { write: true, bypassesApproval: false },
+      },
+      { sessionId: 'session-a', command: 'ls' },
+      'chat-2',
+    );
+    assert.equal(otherPanel, key);
+  });
+
+  it('keeps reads on the same session ordered per chat session', () => {
+    const key = resolveSessionQueueKeyForTests(
+      {
+        capabilityId: 'sftp.read',
+        toolName: 'sftp_read_file',
+        policy: { write: false, bypassesApproval: true },
+      },
+      { sessionId: 'session-a', path: '/etc/hosts' },
       'chat-1',
     );
     assert.equal(key, 'chat-1:session-a');
@@ -101,6 +126,7 @@ describe('capabilityTools result fitting', () => {
     const body = `${'note line\n'.repeat(1000)}important ending`;
     const { tools, toolsContext } = createCattyToolsFromCatalog(
       {
+        aiExec: async () => ({ ok: true }),
         aiCapability: async () => ({
           ok: true,
           stat: { id: 'stat-1', readme: body },
@@ -753,5 +779,179 @@ describe('capabilityTools submit_plan', () => {
     ).execute({ goal: 'check disk', steps: '{not json' }) as { error: string };
 
     assert.match(result.error, /JSON array/);
+  });
+});
+
+describe('capabilityTools multi-host execution', () => {
+  const SCOPE = {
+    sessions: [
+      { sessionId: 'session-a', hostId: 'host-a', hostname: 'a.example', label: 'web-a', protocol: 'ssh', connected: true },
+      { sessionId: 'session-b', hostId: 'host-b', hostname: 'b.example', label: 'web-b', protocol: 'ssh', connected: true },
+      { sessionId: 'session-c', hostId: 'host-c', hostname: 'c.example', label: 'web-c', protocol: 'ssh', connected: true },
+    ],
+  };
+
+  const multiHostTools = (
+    exec: (sessionId: string, command: string) => Promise<{ ok: boolean; stdout?: string; stderr?: string; exitCode?: number; error?: string }>,
+    chatSessionId = 'chat-batch',
+  ) => createCattyToolsFromCatalog({ aiExec: exec }, SCOPE, [], 'confirm', undefined, chatSessionId);
+
+  const okExec = (stdout: string) => async () => ({ ok: true, stdout, stderr: '', exitCode: 0 });
+
+  it('terminal_batch reports every host separately and isolates a failure', async () => {
+    const { tools, toolsContext } = multiHostTools(async (sessionId) => (
+      sessionId === 'session-b'
+        ? { ok: false, error: 'Session disconnected', exitCode: -1 }
+        : { ok: true, stdout: `up on ${sessionId}`, stderr: '', exitCode: 0 }
+    ));
+
+    const result = await withCattyToolContext(
+      tools.terminal_batch,
+      toolsContext.terminal_batch,
+      'batch-1',
+    ).execute({
+      sessionIds: JSON.stringify(['session-a', 'session-b', 'session-c']),
+      command: 'uptime',
+    }) as { hosts: Array<{ sessionId: string; ok: boolean; error?: string; stdout: string }>; summary: { total: number; succeeded: number; failed: number } };
+
+    assert.deepEqual(result.summary, { total: 3, succeeded: 2, failed: 1 });
+    const failed = result.hosts.find(host => host.sessionId === 'session-b');
+    assert.equal(failed?.ok, false);
+    assert.match(failed?.error ?? '', /disconnected/);
+    assert.equal(result.hosts[0]?.stdout, 'up on session-a');
+    assert.equal(result.hosts[2]?.stdout, 'up on session-c');
+  });
+
+  it('terminal_batch rejects work in observer mode', async () => {
+    const { tools, toolsContext } = createCattyToolsFromCatalog(
+      { aiExec: okExec('x') },
+      SCOPE,
+      [],
+      'observer',
+      undefined,
+      'chat-batch-observer',
+    );
+    const result = await withCattyToolContext(
+      tools.terminal_batch,
+      toolsContext.terminal_batch,
+      'batch-observer',
+    ).execute({ sessionIds: JSON.stringify(['session-a']), command: 'uptime' }) as { error: string };
+
+    assert.match(result.error, /Observer mode is read-only/);
+  });
+
+  it('terminal_batch requires a session list it can parse', async () => {
+    const { tools, toolsContext } = multiHostTools(okExec('x'));
+    const bad = await withCattyToolContext(
+      tools.terminal_batch,
+      toolsContext.terminal_batch,
+      'batch-bad',
+    ).execute({ sessionIds: 'session-a', command: 'uptime' }) as { error: string };
+    assert.match(bad.error, /JSON array/);
+
+    const empty = await withCattyToolContext(
+      tools.terminal_batch,
+      toolsContext.terminal_batch,
+      'batch-empty',
+    ).execute({ sessionIds: JSON.stringify([]), command: 'uptime' }) as { error: string };
+    assert.match(empty.error, /at least one session/);
+  });
+
+  it('terminal_batch keeps hosts out of scope out of the run and says why', async () => {
+    const { tools, toolsContext } = multiHostTools(okExec('x'));
+    const result = await withCattyToolContext(
+      tools.terminal_batch,
+      toolsContext.terminal_batch,
+      'batch-scope',
+    ).execute({
+      sessionIds: JSON.stringify(['session-a', 'session-zzz']),
+      command: 'uptime',
+    }) as { hosts: Array<{ sessionId: string; ok: boolean; error?: string }>; summary: { succeeded: number; failed: number } };
+
+    const inScope = result.hosts.find(host => host.sessionId === 'session-a');
+    const outOfScope = result.hosts.find(host => host.sessionId === 'session-zzz');
+    assert.equal(inScope?.ok, true);
+    assert.equal(outOfScope?.ok, false);
+    assert.match(outOfScope?.error ?? '', /not in the current scope/);
+    assert.deepEqual(result.summary, { total: 2, succeeded: 1, failed: 1 });
+  });
+
+  it('compare_machines returns a deterministic conclusion instead of every output', async () => {
+    const outputs: Record<string, string> = {
+      'session-a': 'nginx/1.24.0',
+      'session-b': 'nginx/1.24.0',
+      'session-c': 'nginx/1.25.1',
+    };
+    const { tools, toolsContext } = multiHostTools(async (sessionId) => ({
+      ok: true,
+      stdout: outputs[sessionId] ?? '',
+      stderr: '',
+      exitCode: 0,
+    }));
+
+    const result = await withCattyToolContext(
+      tools.compare_machines,
+      toolsContext.compare_machines,
+      'compare-1',
+    ).execute({
+      sessionIds: JSON.stringify(['session-a', 'session-b', 'session-c']),
+      command: 'nginx -v',
+    }) as {
+      identical: boolean;
+      conclusion: string;
+      differingHosts: string[];
+      differences: Array<{ members: string[]; lines: string[] }>;
+    };
+
+    assert.equal(result.identical, false);
+    assert.deepEqual(result.differingHosts, ['session-c']);
+    assert.deepEqual(result.differences[0].lines, ['nginx/1.25.1']);
+    assert.match(result.conclusion, /2 of 3 hosts agree/);
+  });
+
+  it('compare_machines reports identical hosts without listing differences', async () => {
+    const { tools, toolsContext } = multiHostTools(okExec('nginx/1.24.0'));
+    const result = await withCattyToolContext(
+      tools.compare_machines,
+      toolsContext.compare_machines,
+      'compare-2',
+    ).execute({
+      sessionIds: JSON.stringify(['session-a', 'session-b']),
+      command: 'nginx -v',
+    }) as { identical: boolean; conclusion: string; differences: unknown[] };
+
+    assert.equal(result.identical, true);
+    assert.deepEqual(result.differences, []);
+    assert.match(result.conclusion, /identical output/);
+  });
+
+  it('archives an oversized host output behind a handle instead of returning it whole', async () => {
+    const store = new ToolOutputStore();
+    const noisy = `${'chatty log line\n'.repeat(20_000)}END_MARKER_9911`;
+    const { tools, toolsContext } = createCattyToolsFromCatalog(
+      { aiExec: async () => ({ ok: true, stdout: noisy, stderr: '', exitCode: 0 }) },
+      SCOPE,
+      [],
+      'confirm',
+      undefined,
+      'chat-batch-big',
+      store,
+    );
+
+    const result = await withCattyToolContext(
+      tools.terminal_batch,
+      toolsContext.terminal_batch,
+      'batch-big',
+    ).execute({ sessionIds: JSON.stringify(['session-a']), command: 'cat /var/log/syslog' }) as {
+      hosts: Array<{ stdout: string; handleId?: string }>;
+    };
+
+    const host = result.hosts[0];
+    assert.ok(host.stdout.length < 40_000);
+    assert.match(host.stdout, /output handle/);
+    const handleId = host.stdout.match(/handleId=(tool-output-[^\]\s]+)/)?.[1];
+    assert.ok(handleId);
+    assert.equal(host.handleId, handleId);
+    assert.match(store.read({ handleId, mode: 'search', query: 'END_MARKER_9911' }, 'chat-batch-big') ?? '', /END_MARKER_9911/);
   });
 });

@@ -412,6 +412,38 @@ const TOOL_INPUT_FIELDS = Object.freeze({
         "JSON array of prerequisite checks the plan depends on, in the form [{id, label, ok, detail?}]. Every precondition must be ok=true; a false precondition blocks the plan. Use it for backup-access checks before anything that could break the proxy path: a second live connection to the host exists, an alternate route was actually tested, the current configuration was backed up, and the recovery procedure is written down.",
     },
   },
+  "harness.terminal.batch": {
+    sessionIds: {
+      type: "string",
+      description:
+        "JSON array of session IDs to run on. Use get_environment to resolve labels or hostnames to session IDs.",
+    },
+    command: {
+      type: "string",
+      description: "The command to run on every listed session. The same command goes to each host.",
+    },
+    mode: {
+      type: "string",
+      optional: true,
+      description: "serial (default) runs one host at a time; parallel runs them all at once.",
+    },
+    stopOnError: {
+      type: "string",
+      optional: true,
+      description: "Set to true to stop after the first failing host. Serial mode only.",
+    },
+  },
+  "harness.machines.compare": {
+    sessionIds: {
+      type: "string",
+      description:
+        "JSON array of session IDs to compare. Use get_environment to resolve labels or hostnames to session IDs.",
+    },
+    command: {
+      type: "string",
+      description: "The read-only command to run on every host, for example 'nginx -v' or 'df -h /'. Its output is compared, not its exit code.",
+    },
+  },
   "harness.web.search": {
     query: { type: "string", description: "The search query to look up on the web." },
     maxResults: { type: "number", optional: true, description: "Maximum number of search results to return." },

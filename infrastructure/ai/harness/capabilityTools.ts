@@ -14,9 +14,14 @@ import {
   type ToolDeps,
   type ToolExecResult,
 } from '../shared/toolExecutors';
-import { reserveSessionSlot } from '../shared/sessionExecutionQueue';
+import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutionQueue';
 import { proposePlan } from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
+import {
+  compareHostOutputs,
+  runCommandOnSessions,
+  type HostCommandOutcome,
+} from './multiHostExecution';
 import { fitTerminalExecuteResultForModel } from './terminalCompression';
 import { fitLargeToolResultForModel } from './toolResultFitting';
 import { redactSecretsForModel } from './modelSecretRedaction';
@@ -239,8 +244,7 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
   return { steps };
 }
 
-function parsePlanPreconditions(raw: unknown): { preconditions?: PlanPreconditionResult[]; error?: string } {
-  if (raw === undefined || raw === null) return {};
+function parsePlanPreconditions(raw: unknown): { preconditions?: PlanPreconditionResult[]; error?: string } {  if (raw === undefined || raw === null) return {};
   let parsed: unknown;
   try {
     parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -258,6 +262,83 @@ function parsePlanPreconditions(raw: unknown): { preconditions?: PlanPreconditio
         ...(typeof precondition.detail === 'string' ? { detail: precondition.detail } : {}),
       };
     }),
+  };
+}
+
+/** Handle id embedded in an output-fit notice, when the output was archived. */
+const HANDLE_ID_PATTERN = /handleId=(tool-output-[^\]\s]+)/;
+
+function extractHandleId(text: string): string | undefined {
+  return text.match(HANDLE_ID_PATTERN)?.[1];
+}
+
+/** Parse a JSON array of session ids from a tool argument. */
+function parseSessionIdList(raw: unknown): { ids: string[]; error?: string } {
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return { ids: [], error: 'sessionIds must be a JSON array of session IDs.' };
+  }
+  if (!Array.isArray(parsed)) return { ids: [], error: 'sessionIds must be a JSON array of session IDs.' };
+  const ids = parsed
+    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    .map((entry) => entry.trim());
+  return { ids };
+}
+
+interface HostCommandDeps {
+  deps: ToolDeps;
+  chatSessionId?: string;
+  toolOutputStore?: ToolOutputStore;
+  toolResultDedup?: ToolResultDedup;
+}
+
+/**
+ * Run one command on one host through exactly the path `terminal_execute`
+ * uses: scope and observer checks, shell-aware blocklist, bridge call, output
+ * fitting with an archived handle, and write-fingerprint replay so a batch
+ * retried after compaction does not re-run on any host.
+ */
+async function runSingleHostCommand(
+  ctx: HostCommandDeps,
+  sessionId: string,
+  command: string,
+): Promise<HostCommandOutcome> {
+  const { deps, chatSessionId, toolOutputStore, toolResultDedup } = ctx;
+  const fingerprint = buildTerminalWriteFingerprint(
+    'terminal_execute',
+    deps.chatSessionId,
+    { sessionId, command },
+  );
+  const replay = fingerprint ? toolResultDedup?.replayCompletedWrite(fingerprint) : undefined;
+  if (replay !== undefined) {
+    const replayed = replay as { stdout?: string; stderr?: string; exitCode?: number | null };
+    return {
+      sessionId,
+      ok: true,
+      exitCode: replayed.exitCode ?? null,
+      stdout: replayed.stdout ?? '',
+      stderr: replayed.stderr ?? '',
+      handleId: extractHandleId(replayed.stdout ?? ''),
+    };
+  }
+
+  const result = await executeTerminalExecute(deps, { sessionId, command });
+  const data = result.data ?? { stdout: '', stderr: '', exitCode: null };
+  const fitted = fitTerminalExecuteResultForModel(
+    { ...data, command, sessionId },
+    { chatSessionId, toolOutputStore },
+  );
+  if (fingerprint) toolResultDedup?.rememberCompletedWrite(fingerprint, fitted);
+  return {
+    sessionId,
+    ok: result.ok,
+    ...(result.ok ? {} : { error: result.error }),
+    exitCode: fitted.exitCode,
+    stdout: fitted.stdout,
+    stderr: fitted.stderr,
+    handleId: extractHandleId(fitted.stdout),
   };
 }
 
@@ -321,6 +402,82 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         planId: ctx.toolCallId,
         steps: steps.map(step => ({ id: step.id, title: step.title, ...(step.toolName ? { toolName: step.toolName } : {}) })),
         instruction: 'Plan approved. Execute the steps in order and verify each one before moving on. If reality diverges from the plan, stop and tell the user instead of continuing.',
+      };
+    }
+    case 'harness.terminal.batch':
+    case 'harness.machines.compare': {
+      // Multi-host work: the same command on several machines, each host
+      // reported on its own so one failure cannot hide the others.
+      if (deps.permissionMode === 'observer') {
+        return {
+          error: 'Observer mode is read-only: a command on several hosts cannot run. Switch to confirm or auto in Settings → AI → Safety, then ask again.',
+        };
+      }
+      if (ctx.abortSignal?.aborted) {
+        return { error: 'Tool call cancelled before it could start.' };
+      }
+
+      const parsedIds = parseSessionIdList(args.sessionIds);
+      if (parsedIds.error) return { error: parsedIds.error };
+      const command = typeof args.command === 'string' ? args.command.trim() : '';
+      if (!command) return { error: 'A multi-host run needs a command.' };
+      if (parsedIds.ids.length === 0) {
+        return { error: 'A multi-host run needs at least one session ID in scope.' };
+      }
+
+      const isCompare = spec.capabilityId === 'harness.machines.compare';
+      // Comparison reads run one host at a time: the point is a stable baseline
+      // to diff against, and a slow host should not change the result.
+      const mode = isCompare || args.mode !== 'parallel' ? 'serial' : 'parallel';
+      const stopOnError = !isCompare && (args.stopOnError === true || String(args.stopOnError) === 'true');
+
+      const batch = await runCommandOnSessions({
+        sessionIds: parsedIds.ids,
+        command,
+        mode,
+        stopOnError,
+        reserveSlot: (sessionId) => reserveSessionSlot(hostWriteQueueKey(sessionId)),
+        runOnHost: (sessionId) => runSingleHostCommand(
+          { deps, chatSessionId, toolOutputStore, toolResultDedup },
+          sessionId,
+          command,
+        ),
+      });
+
+      const hosts = batch.hosts.map(host => ({
+        sessionId: host.sessionId,
+        ok: host.ok,
+        ...(host.error ? { error: host.error } : {}),
+        exitCode: host.exitCode,
+        stdout: host.stdout,
+        ...(host.stderr ? { stderr: host.stderr } : {}),
+        ...(host.handleId ? { handleId: host.handleId } : {}),
+      }));
+
+      if (isCompare) {
+        const comparison = compareHostOutputs(command, batch.hosts);
+        return {
+          command,
+          identical: comparison.identical,
+          conclusion: comparison.conclusion,
+          differingHosts: comparison.differingHosts,
+          hostsThatFailed: comparison.hostsThatFailed,
+          differences: comparison.differences,
+          hosts: hosts.map(host => ({
+            sessionId: host.sessionId,
+            ok: host.ok,
+            exitCode: host.exitCode,
+            ...(host.handleId ? { handleId: host.handleId } : {}),
+          })),
+        };
+      }
+
+      return {
+        command,
+        mode: batch.mode,
+        hosts,
+        summary: batch.summary,
+        ...(batch.stoppedEarly ? { stoppedEarly: true } : {}),
       };
     }
     case 'harness.tool_output.read': {
@@ -488,7 +645,10 @@ function resolveSessionQueueKey(
 
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId : undefined;
   if (sessionId) {
-    return `${chatSessionId ?? 'global'}:${sessionId}`;
+    // Host writes are serialized process-wide, not per chat session: two panels
+    // driving the same machine must not interleave. Reads keep their per-session
+    // order so one session's reads stay in sequence.
+    return spec.policy.write ? hostWriteQueueKey(sessionId) : `${chatSessionId ?? 'global'}:${sessionId}`;
   }
   return `${chatSessionId ?? 'global'}:${spec.toolName}`;
 }
@@ -894,14 +1054,16 @@ export function createCattyToolsFromCatalog(
 /**
  * Test helper: attach shared context when calling tool.execute directly.
  *
- * The returned `execute` accepts `unknown` because the catalog tools' input
- * types are built at runtime, which the compiler sees as `never`.
+ * `T` is intentionally unconstrained: the catalog tools carry runtime-built zod
+ * schemas, which the compiler sees as `never` parameters. Constraining `T` to a
+ * callable `execute` made every call site a type error, so the shape is
+ * asserted at the call instead and the returned `execute` accepts `unknown`.
  */
-export function withCattyToolContext<T extends { execute: (...args: never[]) => unknown }>(
+export function withCattyToolContext<T extends { execute?: unknown }>(
   toolInstance: T,
   context: CattyToolContext,
   toolCallId = 'test-call',
-): T & { execute: (input: unknown, options?: Record<string, unknown>) => unknown } {
+): Omit<T, 'execute'> & { execute: (input: unknown, options?: Record<string, unknown>) => unknown } {
   const exec = (toolInstance as unknown as {
     execute: (input: unknown, options: Record<string, unknown>) => unknown;
   }).execute.bind(toolInstance);
@@ -914,7 +1076,7 @@ export function withCattyToolContext<T extends { execute: (...args: never[]) => 
         ...options,
         context,
       }),
-  } as T & { execute: (input: unknown, options?: Record<string, unknown>) => unknown };
+  } as Omit<T, 'execute'> & { execute: (input: unknown, options?: Record<string, unknown>) => unknown };
 }
 
 export { tryFetchHostEnvironment };

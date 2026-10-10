@@ -219,6 +219,32 @@ describe('planGate', () => {
       clearApprovedPlans(chatSessionId);
       assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a' }), false);
     });
+
+    it('covers a multi-host step that names one of the target sessions', async () => {
+      const pending = proposePlan({
+        goal: 'restart nginx on both web hosts',
+        steps: [step({
+          toolName: 'terminal_batch',
+          sessionId: 'sess-b',
+        })],
+        chatSessionId,
+        planId: 'plan-multi',
+      });
+      resolvePlan('plan-multi', { outcome: 'approved' });
+      await pending;
+
+      assert.equal(
+        isToolCoveredByApprovedPlan(chatSessionId, 'terminal_batch', {
+          sessionIds: ['sess-a', 'sess-b', 'sess-c'],
+          command: 'systemctl reload nginx',
+        }),
+        true,
+      );
+      assert.equal(
+        isToolCoveredByApprovedPlan(chatSessionId, 'terminal_batch', { sessionIds: ['sess-z'] }),
+        false,
+      );
+    });
   });
 
   it('clearing a chat session denies its pending plans', async () => {

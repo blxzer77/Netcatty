@@ -195,7 +195,7 @@ test("listCattyToolSpecs includes renderer harness tools and the shared terminal
   const specs = listCattyToolSpecs();
   assert.ok(specs.length >= 20);
   const harness = specs.filter((spec) => spec.capabilityId.startsWith("harness."));
-  assert.equal(harness.length, 7);
+  assert.equal(harness.length, 9);
   for (const spec of harness) {
     const screenRead = spec.capabilityId === "harness.terminal.read_context";
     assert.equal(spec.localExecution, !screenRead);
@@ -219,6 +219,7 @@ test("listCattyToolSpecs includes renderer harness tools and the shared terminal
 test("the sidebar agent advertises exactly the server-ops toolset", () => {
   const sidebarNames = listCattyToolSpecs().map((spec) => spec.toolName).sort();
   assert.deepEqual(sidebarNames, [
+    "compare_machines",
     "get_environment",
     "host_notes_get",
     "host_notes_set",
@@ -237,6 +238,7 @@ test("the sidebar agent advertises exactly the server-ops toolset", () => {
     "sftp_upload",
     "sftp_write_file",
     "submit_plan",
+    "terminal_batch",
     "terminal_execute",
     "terminal_poll",
     "terminal_read_context",

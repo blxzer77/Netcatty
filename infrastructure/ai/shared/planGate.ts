@@ -280,7 +280,9 @@ function registerApprovedPlan(plan: ProposedPlan): void {
  * True when a tool call is covered by an approved plan in this chat session.
  *
  * A step covers a call when it names the same tool and either names no target
- * session or names the same one. Steps that omit `toolName` cover nothing.
+ * session or names the same one. Multi-host tools (`terminal_batch`,
+ * `compare_machines`) carry `sessionIds` instead of `sessionId`, so a step
+ * naming one of the listed hosts still counts as covered.
  */
 export function isToolCoveredByApprovedPlan(
   chatSessionId: string | undefined,
@@ -291,10 +293,13 @@ export function isToolCoveredByApprovedPlan(
   const scopes = approvedPlansByChatSession.get(chatSessionId);
   if (!scopes?.length) return false;
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId : undefined;
+  const sessionIds = Array.isArray(args.sessionIds)
+    ? args.sessionIds.filter((entry): entry is string => typeof entry === 'string')
+    : [];
   return scopes.some(scope => scope.steps.some(step => {
     if (step.toolName !== toolName) return false;
     if (!step.sessionId) return true;
-    return step.sessionId === sessionId;
+    return step.sessionId === sessionId || sessionIds.includes(step.sessionId);
   }));
 }
 

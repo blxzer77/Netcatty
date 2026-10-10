@@ -720,6 +720,72 @@
     }
   },
   {
+    "capabilityId": "harness.terminal.batch",
+    "toolName": "terminal_batch",
+    "rpcMethod": null,
+    "localExecution": true,
+    "description": "Run one command on several sessions in this scope and report each host's result separately.",
+    "inputShape": {
+      "sessionIds": {
+        "type": "string",
+        "optional": false,
+        "description": "JSON array of session IDs to run on. Use get_environment to resolve labels or hostnames to session IDs."
+      },
+      "command": {
+        "type": "string",
+        "optional": false,
+        "description": "The command to run on every listed session. The same command goes to each host."
+      },
+      "mode": {
+        "type": "string",
+        "optional": true,
+        "description": "serial (default) runs one host at a time; parallel runs them all at once."
+      },
+      "stopOnError": {
+        "type": "string",
+        "optional": true,
+        "description": "Set to true to stop after the first failing host. Serial mode only."
+      }
+    },
+    "policy": {
+      "write": true,
+      "sensitiveRead": false,
+      "longRunning": true,
+      "requiresChatSession": true,
+      "bypassesObserverBlock": false,
+      "bypassesApproval": false,
+      "bypassesChatCancel": false
+    }
+  },
+  {
+    "capabilityId": "harness.machines.compare",
+    "toolName": "compare_machines",
+    "rpcMethod": null,
+    "localExecution": true,
+    "description": "Run the same read-only command on several sessions and return which hosts agree and how they differ.",
+    "inputShape": {
+      "sessionIds": {
+        "type": "string",
+        "optional": false,
+        "description": "JSON array of session IDs to compare. Use get_environment to resolve labels or hostnames to session IDs."
+      },
+      "command": {
+        "type": "string",
+        "optional": false,
+        "description": "The read-only command to run on every host, for example 'nginx -v' or 'df -h /'. Its output is compared, not its exit code."
+      }
+    },
+    "policy": {
+      "write": true,
+      "sensitiveRead": false,
+      "longRunning": true,
+      "requiresChatSession": true,
+      "bypassesObserverBlock": false,
+      "bypassesApproval": false,
+      "bypassesChatCancel": false
+    }
+  },
+  {
     "capabilityId": "harness.web.search",
     "toolName": "web_search",
     "rpcMethod": null,
