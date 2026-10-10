@@ -688,7 +688,9 @@ describe('capabilityTools submit_plan', () => {
   const planTools = (permissionMode: 'observer' | 'confirm' | 'auto', chatSessionId: string) =>
     createCattyToolsFromCatalog(
       { aiCapability: async () => ({ ok: true }) },
-      { sessions: [] },
+      { sessions: [
+        { sessionId: 'session-a', hostId: 'host-a', hostname: 'host.example', label: 'host', protocol: 'ssh', connected: true },
+      ] },
       [],
       permissionMode,
       undefined,
@@ -703,6 +705,7 @@ describe('capabilityTools submit_plan', () => {
     command: 'df -h /',
     reason: 'Disk full is the suspected cause',
     verification: 'Reported use is below 90%',
+    args: { sessionId: 'session-a', command: 'df -h /' },
     risk: 'low',
   }]);
 
@@ -814,6 +817,7 @@ describe('capabilityTools submit_plan', () => {
         toolName: 'terminal_execute',
         sessionId: 'session-a',
         command: 'systemctl reload v2ray',
+        args: { sessionId: 'session-a', command: 'systemctl reload v2ray' },
       }]),
       proxyRisk: 'true',
       backupAccess: JSON.stringify({
@@ -862,6 +866,7 @@ describe('capabilityTools submit_plan', () => {
         toolName: 'terminal_execute',
         sessionId: 'session-a',
         command: 'systemctl reload v2ray',
+        args: { sessionId: 'session-a', command: 'systemctl reload v2ray' },
       }]),
       proxyRisk: 'true',
       backupAccess: JSON.stringify({
@@ -884,7 +889,7 @@ describe('capabilityTools submit_plan', () => {
       'plan-proxy-missing',
     ).execute({
       goal: 'reload the proxy service',
-      steps: JSON.stringify([{ id: 's1', title: 'Reload', toolName: 'terminal_execute', sessionId: 'session-a', command: 'systemctl reload v2ray' }]),
+      steps: JSON.stringify([{ id: 's1', title: 'Reload', toolName: 'terminal_execute', sessionId: 'session-a', command: 'systemctl reload v2ray', args: { sessionId: 'session-a', command: 'systemctl reload v2ray' } }]),
       proxyRisk: 'true',
     }) as { error: string };
 

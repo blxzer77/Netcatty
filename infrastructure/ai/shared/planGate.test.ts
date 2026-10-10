@@ -59,6 +59,27 @@ describe('planGate', () => {
     assert.deepEqual(await pending, { outcome: 'denied', note: 'too risky' });
   });
 
+  it('denies a pending plan when its owning turn aborts', async () => {
+    const controller = new AbortController();
+    const pending = proposePlan({
+      goal: 'install nginx',
+      steps: [step()],
+      chatSessionId,
+      planId: 'plan-abort',
+      signal: controller.signal,
+    });
+    controller.abort();
+    assert.deepEqual(await pending, {
+      outcome: 'denied',
+      note: 'Plan approval was cancelled with the owning turn.',
+    });
+    resolvePlan('plan-abort', { outcome: 'approved' });
+    assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', {
+      sessionId: 'sess-a',
+      command: 'systemctl reload nginx',
+    }), false);
+  });
+
   it('denies on timeout and never infers approval from silence', async () => {
     const pending = proposePlan({
       goal: 'install nginx',
@@ -110,6 +131,26 @@ describe('planGate', () => {
     });
     resolvePlan('plan-reused', { outcome: 'approved' });
     assert.deepEqual(await first, { outcome: 'approved' });
+  });
+
+  it('does not allow a resolved plan id to be replayed', async () => {
+    const pending = proposePlan({
+      goal: 'install nginx',
+      steps: [step()],
+      chatSessionId,
+      planId: 'plan-consumed',
+    });
+    resolvePlan('plan-consumed', { outcome: 'denied' });
+    await pending;
+    assert.deepEqual(await proposePlan({
+      goal: 'install nginx',
+      steps: [step()],
+      chatSessionId,
+      planId: 'plan-consumed',
+    }), {
+      outcome: 'denied',
+      note: 'This plan id was already consumed; submit a new plan instead of replaying it.',
+    });
   });
 
   it('ignores a resolution for an unknown or already resolved plan', () => {

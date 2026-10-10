@@ -140,7 +140,7 @@ describe('buildCattyToolApproval with an approved plan', () => {
     assert.equal(result, undefined);
   });
 
-  it('still asks for a call the plan did not name', async () => {
+  it('denies a write outside the approved plan instead of falling back to approval', async () => {
     await approvePlan('plan-call-7', [
       {
         id: 's1',
@@ -156,7 +156,7 @@ describe('buildCattyToolApproval with an approved plan', () => {
       chatSessionId: 'chat-plan',
       requestApproval: async () => { asked = true; return true; },
     });
-    await approval({
+    const result = await approval({
       toolCall: {
         toolCallId: 'call-7',
         toolName: 'sftp_write_file',
@@ -164,6 +164,10 @@ describe('buildCattyToolApproval with an approved plan', () => {
       },
     } as Parameters<typeof approval>[0]);
 
-    assert.equal(asked, true);
+    assert.equal(asked, false);
+    assert.deepEqual(result, {
+      type: 'denied',
+      reason: 'This write is outside the approved plan. Submit a new plan for it.',
+    });
   });
 });

@@ -71,6 +71,27 @@ test('PlanApprovalCard renders the plan the user has to approve', () => {
   assert.match(markup, /Reject/);
 });
 
+test('PlanApprovalCard redacts secrets in visible free-text fields', () => {
+  const markup = renderCard({
+    ...plan,
+    goal: 'deploy with API_TOKEN=tok_live_1234567890',
+    steps: [{
+      ...plan.steps[0],
+      command: 'curl -H "Authorization: Bearer secret-token-value" https://example.test',
+      reason: 'sshpass -p super-secret is unavailable',
+    }],
+    preconditions: [{
+      id: 'p-secret',
+      label: 'Authorization: Bearer precondition',
+      ok: false,
+      detail: 'privateKey=-----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----',
+    }],
+  });
+
+  assert.doesNotMatch(markup, /tok_live_1234567890|secret-token-value|super-secret/);
+  assert.match(markup, /REDACTED|redacted/);
+});
+
 test('PlanApprovalCard warns when a precondition blocks the plan', () => {
   const markup = renderCard({
     ...plan,

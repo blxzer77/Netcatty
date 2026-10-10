@@ -1,7 +1,7 @@
 import type { ToolApprovalConfiguration } from 'ai';
 import type { AIPermissionMode } from '../types';
 import { requestApproval as defaultRequestApproval } from '../shared/approvalGate';
-import { isToolCoveredByApprovedPlan } from '../shared/planGate';
+import { hasApprovedPlanScope, isToolCoveredByApprovedPlan } from '../shared/planGate';
 import { resolveCapabilityId } from './permissionGrants';
 import cattyToolSpecs from './generated/cattyToolSpecs.json';
 
@@ -57,6 +57,12 @@ export function buildCattyToolApproval(input: {
     // arguments; anything the plan did not name still goes through the gate.
     if (isToolCoveredByApprovedPlan(chatSessionId, toolCall.toolName, args)) {
       return undefined;
+    }
+    if (hasApprovedPlanScope(chatSessionId)) {
+      return {
+        type: 'denied' as const,
+        reason: 'This write is outside the approved plan. Submit a new plan for it.',
+      };
     }
     const approved = await requestApproval(
       toolCall.toolCallId,

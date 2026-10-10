@@ -297,6 +297,25 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
   if (inconsistent) {
     return { error: `Plan step "${inconsistent.title}" repeats a command or target inconsistently between its summary fields and args.` };
   }
+  const readOnlyStep = steps.find(step => step.risk === 'read');
+  if (readOnlyStep) {
+    return { error: `Plan step "${readOnlyStep.title}" is marked read-only. Run read-only checks outside a write plan.` };
+  }
+  const incomplete = steps.find(step => {
+    if (!step.toolName || !step.args) return true;
+    const args = step.args;
+    const toolName = step.toolName;
+    const hasTarget = ['sessionId', 'sessionIds', 'hostId', 'ruleId', 'jobId']
+      .some(key => Object.prototype.hasOwnProperty.call(args, key));
+    if (!hasTarget) return true;
+    if (['terminal_execute', 'terminal_start', 'terminal_batch', 'compare_machines'].includes(toolName)) {
+      return typeof args.command !== 'string' || args.command !== step.command;
+    }
+    return false;
+  });
+  if (incomplete) {
+    return { error: `Plan step "${incomplete.title}" must name a tool, an exact args object, and its target.` };
+  }
   return { steps };
 }
 
@@ -460,6 +479,34 @@ async function prepareMachineNotesWrite(
   };
 }
 
+function validatePlanTargets(steps: readonly PlanStep[], context: ExecutorContext): string | null {
+  const targetSessionIds = steps.flatMap(step => [
+    ...(step.sessionId ? [step.sessionId] : []),
+    ...(step.sessionIds ?? []),
+  ]);
+  for (const sessionId of new Set(targetSessionIds)) {
+    const session = context.sessions.find(entry => entry.sessionId === sessionId);
+    if (!session) return `Plan target session "${sessionId}" is not in the current scope.`;
+    if (!session.connected) return `Plan target session "${sessionId}" is no longer connected.`;
+  }
+  for (const step of steps) {
+    const args = step.args;
+    const declaredHostId = typeof args?.hostId === 'string' ? args.hostId : undefined;
+    if (!declaredHostId) continue;
+    const stepSessionIds = [
+      ...(step.sessionId ? [step.sessionId] : []),
+      ...(step.sessionIds ?? []),
+    ];
+    for (const sessionId of stepSessionIds) {
+      const session = context.sessions.find(entry => entry.sessionId === sessionId);
+      if (session?.hostId !== declaredHostId) {
+        return `Plan target host "${declaredHostId}" does not match session "${sessionId}".`;
+      }
+    }
+  }
+  return null;
+}
+
 async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<unknown> {
   const { deps, spec, args, toolOutputStore, toolResultDedup, chatSessionId, selectedRunbook } = ctx;
   const resolveContext = () => (typeof deps.context === 'function' ? deps.context() : deps.context);
@@ -484,6 +531,8 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       const parsedSteps = parsePlanPayload(args.steps);
       if (parsedSteps.error) return { error: parsedSteps.error };
       const steps = parsedSteps.steps ?? [];
+      const initialTargetError = validatePlanTargets(steps, resolveContext());
+      if (initialTargetError) return { error: initialTargetError };
 
       const parsedPreconditions = parsePlanPreconditions(args.preconditions);
       if (parsedPreconditions.error) return { error: parsedPreconditions.error };
@@ -528,7 +577,13 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       };
 
       let backupAccessChecks: ReturnType<typeof verifyBackupAccess>['checks'] | undefined;
-      let validateApproval: (() => PlanDecision | void) | undefined;
+      const validateCurrentTargets = () => {
+        const targetError = validatePlanTargets(steps, resolveContext());
+        return targetError
+          ? { outcome: 'denied' as const, note: targetError }
+          : undefined;
+      };
+      let validateApproval: (() => PlanDecision | void) | undefined = validateCurrentTargets;
       if (proxyRisk) {
         if (!parsedBackupAccess.declarations) {
           return {
@@ -552,6 +607,8 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
           };
         }
         validateApproval = () => {
+          const targetDecision = validateCurrentTargets();
+          if (targetDecision) return targetDecision;
           const current = verifyCurrentBackupAccess();
           return current.ok
             ? undefined
@@ -579,6 +636,8 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         preconditions: planPreconditions.length > 0 ? planPreconditions : undefined,
         chatSessionId,
         validateApproval,
+        signal: ctx.abortSignal,
+        validateExecution: () => validatePlanTargets(steps, resolveContext()),
         // The tool call id doubles as the plan id so a retried submission joins
         // the pending decision instead of raising a second request.
         planId: ctx.toolCallId,

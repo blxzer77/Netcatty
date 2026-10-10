@@ -41,7 +41,7 @@ export const PlanApprovalCard: React.FC<{
         <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
           {t('ai.plan.goal')}
         </div>
-        <div className="text-sm leading-5">{plan.goal}</div>
+        <div className="text-sm leading-5">{formatPlanText(plan.goal)}</div>
       </div>
 
       {preconditions.length > 0 && (
@@ -59,10 +59,10 @@ export const PlanApprovalCard: React.FC<{
                 )}
                 <span className="min-w-0">
                   <span className={check.ok ? (check.verified === false ? 'text-amber-600 dark:text-amber-400' : '') : 'text-destructive'}>
-                    {check.label}{check.ok && check.verified === false ? ` (${t('ai.plan.unverified')})` : ''}
+                    {formatPlanText(check.label)}{check.ok && check.verified === false ? ` (${t('ai.plan.unverified')})` : ''}
                   </span>
                   {check.detail ? (
-                    <span className="block text-muted-foreground">{check.detail}</span>
+                    <span className="block text-muted-foreground">{formatPlanText(check.detail)}</span>
                   ) : null}
                 </span>
               </li>
@@ -83,12 +83,12 @@ export const PlanApprovalCard: React.FC<{
             >
               <div className="flex items-baseline gap-1.5">
                 <span className="font-mono text-muted-foreground">{index + 1}.</span>
-                <span className="font-medium leading-5">{step.title}</span>
+                <span className="font-medium leading-5">{formatPlanText(step.title)}</span>
                 <RiskBadge risk={step.risk} />
               </div>
               {step.command ? (
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted/50 px-1.5 py-1 font-mono text-[11px] leading-4">
-                  {step.command}
+                  {formatPlanText(step.command)}
                 </pre>
               ) : null}
               {step.args ? (
@@ -104,8 +104,8 @@ export const PlanApprovalCard: React.FC<{
                     {step.sessionIds?.length ? ` @ [${step.sessionIds.join(', ')}]` : ''}
                   </div>
                 ) : null}
-                {step.reason ? <div>{t('ai.plan.reason')}: {step.reason}</div> : null}
-                {step.verification ? <div>{t('ai.plan.verify')}: {step.verification}</div> : null}
+                {step.reason ? <div>{t('ai.plan.reason')}: {formatPlanText(step.reason)}</div> : null}
+                {step.verification ? <div>{t('ai.plan.verify')}: {formatPlanText(step.verification)}</div> : null}
               </div>
             </li>
           ))}
@@ -132,6 +132,13 @@ export const PlanApprovalCard: React.FC<{
 
 const PLAN_ARG_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential)/i;
 const MAX_PLAN_ARGS_PREVIEW_CHARS = 8_000;
+
+function formatPlanText(value: string | undefined): string {
+  return value
+    ? redactSecretsForModel(value)
+      .replace(/(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, '$1[REDACTED]')
+    : '';
+}
 
 function redactPlanPreview(value: unknown, key?: string): unknown {
   if (key && PLAN_ARG_SENSITIVE_KEY.test(key)) return '[redacted]';

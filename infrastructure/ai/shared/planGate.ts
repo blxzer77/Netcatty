@@ -18,6 +18,7 @@ import {
   resolveCattyApprovalDeadlines,
 } from './approvalConstants';
 import { globalTraceStore } from '../harness/traceStore';
+import { redactSecretsForModel } from '../harness/modelSecretRedaction';
 import type {
   PlanPreconditionResult,
   PlanProposedEvent,
@@ -50,6 +51,8 @@ interface PendingPlanEntry {
   resolve: (decision: PlanDecision) => void;
   /** Re-checks safety-critical preconditions immediately before approval. */
   validateApproval?: () => PlanDecision | void;
+  /** Re-checks session/host identity immediately before each execution. */
+  validateExecution?: () => string | null;
   /** Clears the idle auto-deny timer without resolving the plan. */
   cancelTimeout?: () => void;
   /** Drops the idle timer because the plan already settled. */
@@ -59,11 +62,14 @@ interface PendingPlanEntry {
 interface ApprovedPlanScope {
   planId: string;
   steps: PlanStep[];
-  /** The next non-read step that may be claimed by a write tool call. */
+  /** Re-checks session/host identity immediately before each execution. */
+  validateExecution?: () => string | null;
+  /** The next executable step that may be claimed by a write tool call. */
   nextStepIndex: number;
 }
 
 const pendingPlans = new Map<string, PendingPlanEntry>();
+const consumedPlanIds = new Set<string>();
 const approvedPlansByChatSession = new Map<string, ApprovedPlanScope[]>();
 
 const proposedListeners = new Set<PlanProposedListener>();
@@ -83,6 +89,7 @@ type PlanTraceEvent =
 
 const TRACE_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
 const TRACE_SECRET_PATTERN = /(?:^|[^A-Za-z0-9])(?:api[_-]?(?:key|token)|access[_-]?token|token|password|secret)\s*[:=]\s*[^\s,;]+/gi;
+const TRACE_SSH_PASSWORD_PATTERN = /(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi;
 
 function redactTraceValue(value: unknown, key?: string): unknown {
   if (key && TRACE_SENSITIVE_KEY.test(key)) return '[redacted]';
@@ -93,7 +100,11 @@ function redactTraceValue(value: unknown, key?: string): unknown {
         .map(([entryKey, entryValue]) => [entryKey, redactTraceValue(entryValue, entryKey)]),
     );
   }
-  return typeof value === 'string' ? value.replace(TRACE_SECRET_PATTERN, '[redacted]') : value;
+  return typeof value === 'string'
+    ? redactSecretsForModel(value)
+      .replace(TRACE_SECRET_PATTERN, '[redacted]')
+      .replace(TRACE_SSH_PASSWORD_PATTERN, '$1[redacted]')
+    : value;
 }
 
 function redactTraceSteps(steps: PlanStep[]): PlanStep[] {
@@ -110,7 +121,14 @@ function trace(plan: ProposedPlan, event: PlanTraceEvent): void {
   // Each branch restores the discriminant the Omit above stripped, so the event
   // stays assignable to the shared AgentEvent union the trace store accepts.
   const safeEvent = event.type === 'plan_proposed'
-    ? { ...event, goal: String(redactTraceValue(event.goal)), steps: redactTraceSteps(event.steps) }
+    ? {
+        ...event,
+        goal: String(redactTraceValue(event.goal)),
+        steps: redactTraceSteps(event.steps),
+        preconditions: event.preconditions
+          ? redactTraceValue(event.preconditions) as PlanPreconditionResult[]
+          : undefined,
+      }
     : { ...event, ...(event.note ? { note: String(redactTraceValue(event.note)) } : {}) };
   const appended = safeEvent.type === 'plan_proposed'
     ? { ...base, ...safeEvent, type: 'plan_proposed' as const }
@@ -128,6 +146,10 @@ export interface ProposePlanInput {
   timeoutMs?: number;
   /** Optional last-moment safety validation before the user approval is granted. */
   validateApproval?: () => PlanDecision | void;
+  /** Cancels a pending approval when the owning Catty turn is aborted. */
+  signal?: AbortSignal;
+  /** Re-checks target session/host identity before each covered execution. */
+  validateExecution?: () => string | null;
 }
 
 /**
@@ -138,6 +160,12 @@ export interface ProposePlanInput {
  */
 export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
   const planId = input.planId ?? nextPlanEventId('plan');
+  if (consumedPlanIds.has(planId)) {
+    return Promise.resolve({
+      outcome: 'denied',
+      note: 'This plan id was already consumed; submit a new plan instead of replaying it.',
+    });
+  }
   const plan: ProposedPlan = {
     planId,
     goal: input.goal,
@@ -185,9 +213,34 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
       clearTimer();
       resolve(decision);
     };
+    const denyAborted = () => {
+      if (!pendingPlans.has(planId)) return;
+      pendingPlans.delete(planId);
+      consumedPlanIds.add(planId);
+      const decision: PlanDecision = {
+        outcome: 'denied',
+        note: 'Plan approval was cancelled with the owning turn.',
+      };
+      trace(plan, {
+        id: nextPlanEventId('plan-resolved'),
+        type: 'plan_resolved',
+        planId,
+        outcome: decision.outcome,
+        note: decision.note,
+      });
+      for (const listener of clearedListeners) {
+        try { listener([planId]); } catch { /* ignore listener errors */ }
+      }
+      for (const listener of resolvedListeners) {
+        try { listener(planId, decision); } catch { /* ignore listener errors */ }
+      }
+      settle(decision);
+    };
     const denyTimedOut = () => {
       if (!pendingPlans.has(planId)) return;
       pendingPlans.delete(planId);
+      consumedPlanIds.add(planId);
+      input.signal?.removeEventListener('abort', denyAborted);
       const decision: PlanDecision = {
         outcome: 'timeout',
         note: 'Plan approval timed out.',
@@ -221,6 +274,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
       plan,
       resolve: settle,
       validateApproval: input.validateApproval,
+      validateExecution: input.validateExecution,
       cancelTimeout: () => {
         const remainingHard = hardDeadlineAt - Date.now();
         if (remainingHard <= 0) {
@@ -231,8 +285,17 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
         // hard deadline.
         armTimer(Math.min(idleMs, remainingHard));
       },
-      dispose: clearTimer,
+      dispose: () => {
+        clearTimer();
+        input.signal?.removeEventListener('abort', denyAborted);
+      },
     });
+
+    if (input.signal?.aborted) {
+      denyAborted();
+      return;
+    }
+    input.signal?.addEventListener('abort', denyAborted, { once: true });
 
     trace(plan, {
       id: nextPlanEventId('plan-proposed'),
@@ -310,11 +373,12 @@ export function resolvePlan(
   }
 
   pendingPlans.delete(planId);
+  consumedPlanIds.add(planId);
   entry.dispose?.();
   entry.resolve(normalized);
 
   if (normalized.outcome === 'approved') {
-    registerApprovedPlan(entry.plan);
+    registerApprovedPlan(entry.plan, entry.validateExecution);
   }
 
   trace(entry.plan, {
@@ -332,11 +396,19 @@ export function resolvePlan(
   }
 }
 
-function registerApprovedPlan(plan: ProposedPlan): void {
+function registerApprovedPlan(
+  plan: ProposedPlan,
+  validateExecution?: () => string | null,
+): void {
   const chatSessionId = plan.chatSessionId;
   if (!chatSessionId) return;
   const scopes = approvedPlansByChatSession.get(chatSessionId) ?? [];
-  scopes.push({ planId: plan.planId, steps: plan.steps, nextStepIndex: 0 });
+  scopes.push({
+    planId: plan.planId,
+    steps: plan.steps,
+    validateExecution,
+    nextStepIndex: 0,
+  });
   approvedPlansByChatSession.set(chatSessionId, scopes);
 }
 
@@ -363,15 +435,9 @@ export function isToolCoveredByApprovedPlan(
     : [];
 
   for (const scope of scopes) {
-    // Read-only steps are not routed through toolApproval. Let a later write
-    // step become claimable when the model has already performed its read.
-    while (
-      scope.nextStepIndex < scope.steps.length
-      && scope.steps[scope.nextStepIndex]?.risk === 'read'
-    ) {
-      scope.nextStepIndex += 1;
-    }
-
+    if (scope.validateExecution?.()) continue;
+    // Plans submitted by Catty contain executable write steps only. A read step
+    // must not be silently skipped because doing so would weaken plan order.
     const step = scope.steps[scope.nextStepIndex];
     if (!step || step.toolName !== toolName) continue;
     if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) {
@@ -453,6 +519,7 @@ export function clearChatSessionPlans(chatSessionId: string | undefined): void {
   for (const [planId, entry] of pendingPlans) {
     if (entry.plan.chatSessionId !== chatSessionId) continue;
     dropped.push(planId);
+    consumedPlanIds.add(planId);
     pendingPlans.delete(planId);
     entry.dispose?.();
     const decision = { outcome: 'denied' as const, note: 'Chat session was stopped.' };
@@ -495,6 +562,10 @@ export function onPlanCleared(listener: PlanClearedListener): () => void {
  * Replay currently pending plans to a listener. Used when the chat UI remounts,
  * so a plan requested while no listener was mounted is not silently missed.
  */
+export function hasApprovedPlanScope(chatSessionId: string | undefined): boolean {
+  return Boolean(chatSessionId && approvedPlansByChatSession.get(chatSessionId)?.length);
+}
+
 export function replayPendingPlans(listener: PlanProposedListener): void {
   for (const [, entry] of pendingPlans) {
     try { listener(entry.plan); } catch { /* ignore listener errors */ }
@@ -508,6 +579,7 @@ export function resetPlanGateForTests(): void {
     entry.resolve({ outcome: 'denied', note: 'Plan gate reset.' });
   }
   pendingPlans.clear();
+  consumedPlanIds.clear();
   approvedPlansByChatSession.clear();
   proposedListeners.clear();
   resolvedListeners.clear();

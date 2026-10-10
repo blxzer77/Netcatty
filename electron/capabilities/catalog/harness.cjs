@@ -97,7 +97,7 @@ const HARNESS_CAPABILITIES = [
       requiresChatSession: true,
       bypassesObserverBlock: false,
       bypassesApproval: true,
-      bypassesChatCancel: true,
+      bypassesChatCancel: false,
     },
     surfaces: {
       catty: { toolName: "submit_plan" },
