@@ -110,6 +110,7 @@ function createCapabilityRpcDispatcher(deps) {
     session: sessionService,
   };
   const activeChatCancellations = new Map();
+  const activePortForwardStarts = new Set();
 
   const registerChatCancellation = (chatSessionId, cancel) => {
     if (!chatSessionId || typeof cancel !== "function") return () => {};
@@ -314,13 +315,30 @@ function createCapabilityRpcDispatcher(deps) {
       && typeof trustedChatSessionId === "string"
       && typeof scopedParams?.ruleId === "string";
     const shouldTrackChatOperation = typeof trustedChatSessionId === "string";
+    let ownsPortForwardStartLock = false;
     if (shouldCancelPortForwardStart) {
-      const existing = await service.listTunnels?.();
+      if (activePortForwardStarts.has(scopedParams.ruleId)) {
+        return { ok: false, error: "A port-forward start for this rule is already in progress." };
+      }
+      activePortForwardStarts.add(scopedParams.ruleId);
+      ownsPortForwardStartLock = true;
+      let existing;
+      try {
+        existing = await service.listTunnels?.();
+      } catch (error) {
+        activePortForwardStarts.delete(scopedParams.ruleId);
+        ownsPortForwardStartLock = false;
+        return { ok: false, error: error?.message || String(error) };
+      }
       if (!existing || existing.ok === false) {
+        activePortForwardStarts.delete(scopedParams.ruleId);
+        ownsPortForwardStartLock = false;
         return { ok: false, error: existing?.error || "Unable to verify existing port-forward tunnels before starting." };
       }
       const activeTunnels = Array.isArray(existing.tunnels) ? existing.tunnels : [];
       if (activeTunnels.some(tunnel => tunnel?.ruleId === scopedParams.ruleId)) {
+        activePortForwardStarts.delete(scopedParams.ruleId);
+        ownsPortForwardStartLock = false;
         return { ok: false, error: "Port-forward rule already has an active tunnel; stop it explicitly before starting it again." };
       }
     }
@@ -356,6 +374,7 @@ function createCapabilityRpcDispatcher(deps) {
       return result;
     } finally {
       unregisterCancellation();
+      if (ownsPortForwardStartLock) activePortForwardStarts.delete(scopedParams.ruleId);
     }
   };
   dispatchCapabilityRpc.cancelChatSessionOperations = cancelChatSessionOperations;

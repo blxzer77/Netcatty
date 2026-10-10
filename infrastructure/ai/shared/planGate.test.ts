@@ -45,6 +45,10 @@ describe('planGate', () => {
       'printf x | xargs rm',
       'find /tmp -exec rm {} \\',
       'powershell -Command Get-Process',
+      'ssh other-host systemctl stop nginx',
+      'docker exec proxy systemctl restart nginx',
+      'kubectl exec pod -- sh -c id',
+      'ansible all -m shell -a id',
     ]) {
       assert.equal(hasUnsafePlanCommand(command), true, command);
     }

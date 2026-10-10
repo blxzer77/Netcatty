@@ -501,7 +501,15 @@ async function runSingleHostCommand(
     { ...data, command, sessionId },
     { chatSessionId, toolOutputStore },
   );
-  if (fingerprint) toolResultDedup?.rememberCompletedWrite(fingerprint, fitted);
+  if (fingerprint) {
+    const replayable = result.ok
+      ? fitted
+      : {
+          ...fitted,
+          error: result.error || 'Terminal command failed before completion.',
+        };
+    toolResultDedup?.rememberCompletedWrite(fingerprint, replayable);
+  }
   return {
     sessionId,
     ok: result.ok,
