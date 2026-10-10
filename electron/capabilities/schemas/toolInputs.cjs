@@ -374,9 +374,11 @@ const TOOL_INPUT_FIELDS = Object.freeze({
   "portforward.tunnels.list": {},
   "portforward.start": {
     ruleId: { type: "string", description: "Port forwarding rule ID." },
+    hostId: { type: "string", description: "Vault host ID that owns the rule; must be in the current scope." },
   },
   "portforward.stop": {
     ruleId: { type: "string", description: "Port forwarding rule ID." },
+    hostId: { type: "string", description: "Vault host ID that owns the rule; must be in the current scope." },
   },
   "harness.tool_output.read": {
     handleId: { type: "string", description: "Tool output handle id from a prior truncated result." },

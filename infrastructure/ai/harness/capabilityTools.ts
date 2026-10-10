@@ -111,11 +111,20 @@ async function invokeCapabilityRpc(
   const cancellation = abortSignal
     ? new Promise<unknown>(resolve => {
         cancel = () => {
-          // The main process owns the active SFTP/tunnel/RPC operation. Marking
-          // the chat cancelled reuses its central cancellation fan-out rather
-          // than pretending that renderer Promise.race alone stopped the write.
-          if (chatSessionId) void bridge.aiSetChatSessionCancelled?.(chatSessionId, true);
-          resolve({ error: 'Capability call cancelled with the owning turn.' });
+          // The main process owns the active SFTP/tunnel/RPC operation. Do not
+          // resolve this tool until its cancellation fan-out acknowledges the
+          // request; a renderer-only Promise.race would release the queue while
+          // the side effect could still be running.
+          const acknowledgement = chatSessionId && bridge.aiSetChatSessionCancelled
+            ? bridge.aiSetChatSessionCancelled(chatSessionId, true)
+            : Promise.resolve({ ok: true });
+          void acknowledgement.then(result => {
+            resolve(result?.ok === false
+              ? { error: result.error || 'Capability cancellation was not acknowledged.' }
+              : { error: 'Capability call cancelled with the owning turn.' });
+          }).catch(() => {
+            resolve({ error: 'Capability cancellation was not acknowledged.' });
+          });
         };
         abortSignal.addEventListener('abort', cancel, { once: true });
       })
@@ -355,7 +364,8 @@ function parsePlanPreconditions(raw: unknown): { preconditions?: PlanPreconditio
         id: String(precondition.id ?? 'check'),
         label: String(precondition.label ?? precondition.id ?? 'check'),
         ok: precondition.ok === true,
-        verified: precondition.verified === true,
+        // Model-provided checks are declarations, never harness evidence.
+        verified: false,
         ...(typeof precondition.detail === 'string' ? { detail: precondition.detail } : {}),
       };
     }),
@@ -619,7 +629,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       const parsedPreconditions = parsePlanPreconditions(args.preconditions);
       if (parsedPreconditions.error) return { error: parsedPreconditions.error };
       const preconditions = parsedPreconditions.preconditions;
-      const unmet = (preconditions ?? []).filter(precondition => !precondition.ok);
+      const unmet = (preconditions ?? []).filter(precondition => !precondition.ok || precondition.verified !== true);
       if (unmet.length > 0) {
         return {
           error: `Plan blocked by unmet preconditions: ${unmet.map(p => p.label).join('; ')}. Run the checks, resolve them, then propose the plan again.`,
@@ -651,10 +661,18 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
           ...(step.sessionId ? [step.sessionId] : []),
           ...(step.sessionIds ?? []),
         ]);
+        const targetHostIds = steps.flatMap(step =>
+          typeof step.args?.hostId === 'string' ? [step.args.hostId] : [],
+        );
         const targetHosts = [...new Set(targetSessionIds)].map(sessionId => {
           const session = scopeContext.sessions.find(entry => entry.sessionId === sessionId);
           return { hostId: session?.hostId, hostname: session?.hostname ?? sessionId };
         });
+        for (const hostId of new Set(targetHostIds)) {
+          if (targetHosts.some(target => target.hostId === hostId)) continue;
+          const session = scopeContext.sessions.find(entry => entry.hostId === hostId);
+          targetHosts.push({ hostId, hostname: session?.hostname ?? hostId });
+        }
         return { scopeContext, targetHosts };
       };
 
@@ -992,13 +1010,15 @@ function resolveHostWriteQueueKey(
 ): string {
   const resolved = typeof context === 'function' ? context() : context;
   const session = resolved.sessions.find(entry => entry.sessionId === sessionId);
-  if (session?.hostId) return hostWriteQueueKey(`id:${session.hostId}`);
+  // Prefer hostname for every session when it is available so a connection
+  // with a missing hostId still shares the same mutex as a vault-backed
+  // connection to that host. The main process remains the canonical identity
+  // authority; this is only the renderer-side conservative fallback.
   if (session?.hostname) {
     const protocol = session.protocol?.toLowerCase() || 'unknown';
     return hostWriteQueueKey(`name:${session.hostname.trim().toLowerCase()}:${protocol}`);
   }
-  // Without a canonical host identity, serialize conservatively by session
-  // rather than pretending unrelated sessions are the same machine.
+  if (session?.hostId) return hostWriteQueueKey(`id:${session.hostId}`);
   return hostWriteQueueKey(`session:${sessionId}`);
 }
 

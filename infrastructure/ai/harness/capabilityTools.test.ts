@@ -757,6 +757,24 @@ describe('capabilityTools submit_plan', () => {
     assert.equal(result.blockedPreconditions.length, 1);
   });
 
+  it('does not trust model-provided verified preconditions', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-unverified');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-unverified',
+    ).execute({
+      goal: 'restart the proxy service',
+      steps,
+      preconditions: JSON.stringify([
+        { id: 'backup', label: 'configuration backup exists', ok: true, verified: true },
+      ]),
+    }) as { error: string };
+
+    assert.match(result.error, /blocked by unmet preconditions/);
+  });
+
   it('reports rejection with the user reason and grants nothing', async () => {
     resetPlanGateForTests();
     const { tools, toolsContext } = planTools('confirm', 'chat-plan-denied');
@@ -1178,6 +1196,8 @@ describe('capabilityTools multi-host execution', () => {
       "uptime\ncat /etc/passwd",
       "docker exec proxy sh -c 'systemctl stop nginx'",
       "kubectl delete pod proxy",
+      'cat ~/.ssh/id_ed25519',
+      'grep -R token /etc',
     ]) {
       const rejected = await withCattyToolContext(
         tools.compare_machines,

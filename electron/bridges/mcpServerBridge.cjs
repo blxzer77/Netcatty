@@ -2322,7 +2322,7 @@ function getPermissionGrants() {
   return permissionGrantsSnapshot;
 }
 
-function applyChatSessionCancelled(chatSessionId, cancelled) {
+async function applyChatSessionCancelled(chatSessionId, cancelled) {
   if (!chatSessionId || typeof chatSessionId !== "string") {
     throw new Error("chatSessionId is required");
   }
@@ -2332,7 +2332,10 @@ function applyChatSessionCancelled(chatSessionId, cancelled) {
     cancelBackgroundJobsForSession(chatSessionId);
     cancelWorkerBackgroundJobsForSession(chatSessionId);
     clearPendingApprovals(chatSessionId);
-    void cancelSftpOpsForSession(chatSessionId);
+    // Do not acknowledge cancellation until tracked SFTP operations have
+    // received and completed their cancellation callbacks. The renderer uses
+    // this acknowledgement to keep its operation queue occupied.
+    await cancelSftpOpsForSession(chatSessionId);
   } else {
     setChatSessionCancelled(chatSessionId, false);
   }
