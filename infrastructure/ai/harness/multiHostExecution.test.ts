@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   compareHostOutputs,
+  isReadOnlyCompareCommand,
   runCommandOnSessions,
   type HostCommandOutcome,
 } from './multiHostExecution';
@@ -184,6 +185,14 @@ describe('runCommandOnSessions', () => {
     assert.equal(result.hosts[0]?.ok, false);
     assert.match(result.hosts[0]?.error ?? '', /bridge exploded/);
     assert.deepEqual(reserved, ['a', 'release:a']);
+  });
+});
+
+describe('compare command safety', () => {
+  it('rejects sensitive paths even for read-only-looking commands', () => {
+    for (const command of ['ls -l ~/.ssh', 'stat /etc/shadow', 'du -h /root/.ssh', 'ps -ef', 'cat /etc/passwd']) {
+      assert.equal(isReadOnlyCompareCommand(command), false, command);
+    }
   });
 });
 

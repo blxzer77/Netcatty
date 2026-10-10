@@ -62,7 +62,7 @@ test('PlanApprovalCard renders the plan the user has to approve', () => {
   assert.match(markup, /cp \/etc\/nginx\/nginx\.conf \/etc\/nginx\/nginx\.conf\.bak/);
   assert.match(markup, /Apply the new configuration/);
   assert.match(markup, /args:/);
-  assert.match(markup, /\[redacted\]/);
+  assert.match(markup, /\[redacted(?:\]|\s)/);
   assert.doesNotMatch(markup, /tok_live_1234567890/);
   assert.match(markup, /curl localhost returns 200/);
   assert.match(markup, /terminal_execute @ session-a/);

@@ -59,6 +59,7 @@ export interface RunCommandOnSessionsInput {
 const MAX_COMPARE_LINES_PER_HOST = 20;
 
 const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|ps|top|ss|netstat|nginx\s+-v)(?:\s|$)/i;
+const SENSITIVE_COMPARE_TARGET = /(?:\.ssh|\/etc\/(?:shadow|passwd|group|gshadow)|authorized_keys|known_hosts|(?:^|[\s/])(?:\.env|credentials?|secrets?|tokens?|private[_-]?keys?)(?:[\s/]|$)|\/proc\/[^\s]+\/cmdline)/i;
 
 /**
  * Compare is intentionally conservative: a shell command is not considered
@@ -68,7 +69,9 @@ const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmsta
 export function isReadOnlyCompareCommand(command: string): boolean {
   const trimmed = command.trim();
   if (!trimmed || /[\r\n;&|`$<>]/.test(trimmed)) return false;
+  if (SENSITIVE_COMPARE_TARGET.test(trimmed)) return false;
   if (/(?:^|\s)(?:rm|mv|cp|mkdir|touch|chmod|chown|kill|reboot|shutdown|tee)(?:\s|$)/i.test(trimmed)) return false;
+  if (/(?:^|\s)ps\s+\S/i.test(trimmed)) return false;
   if (/(?:sed|perl)\s+[^\n]*\s-i(?:\s|$)/i.test(trimmed)) return false;
   if (/(?:systemctl|service)\s+(?:(?:\S+\s+)?(?:start|restart|reload|stop|enable|disable|mask|unmask)\b|(?:start|restart|reload|stop|enable|disable|mask|unmask)\s+\S+)/i.test(trimmed)) return false;
   if (/\bnginx\s+-s\s+(?:reload|stop|quit)\b/i.test(trimmed)) return false;

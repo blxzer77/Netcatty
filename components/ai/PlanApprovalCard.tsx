@@ -134,15 +134,29 @@ export const PlanApprovalCard: React.FC<{
 const PLAN_ARG_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
 const MAX_PLAN_ARGS_PREVIEW_CHARS = 8_000;
 
+function fingerprint(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function formatPlanText(value: string | undefined): string {
-  return value
-    ? redactSecretsForModel(value)
-      .replace(/(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, '$1[REDACTED]')
-    : '';
+  if (!value) return '';
+  const redacted = redactSecretsForModel(value)
+    .replace(/(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, '$1[REDACTED]');
+  return redacted === value
+    ? redacted
+    : `${redacted} [length=${value.length} fingerprint=${fingerprint(value)}]`;
 }
 
 function redactPlanPreview(value: unknown, key?: string): unknown {
-  if (key && PLAN_ARG_SENSITIVE_KEY.test(key)) return '[redacted]';
+  if (key && PLAN_ARG_SENSITIVE_KEY.test(key)) {
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+    return `[redacted length=${serialized.length} fingerprint=${fingerprint(serialized)}]`;
+  }
   if (Array.isArray(value)) return value.map(entry => redactPlanPreview(entry));
   if (value && typeof value === 'object') {
     return Object.fromEntries(

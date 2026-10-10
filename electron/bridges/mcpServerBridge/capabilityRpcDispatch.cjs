@@ -126,7 +126,9 @@ function createCapabilityRpcDispatcher(deps) {
   const cancelChatSessionOperations = async (chatSessionId) => {
     const cancellations = activeChatCancellations.get(chatSessionId);
     if (!cancellations || cancellations.size === 0) return;
-    await Promise.allSettled([...cancellations].map(cancel => Promise.resolve().then(cancel)));
+    const results = await Promise.allSettled([...cancellations].map(cancel => Promise.resolve().then(cancel)));
+    const failure = results.find(result => result.status === "rejected");
+    if (failure) throw failure.reason instanceof Error ? failure.reason : new Error(String(failure.reason));
   };
 
   const dispatchCapabilityRpc = async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
@@ -258,19 +260,23 @@ function createCapabilityRpcDispatcher(deps) {
     const shouldCancelPortForwardStart = capability.id === "portforward.start"
       && typeof trustedChatSessionId === "string"
       && typeof scopedParams?.ruleId === "string";
+    const shouldTrackChatOperation = typeof trustedChatSessionId === "string";
     let operationPromise;
-    const unregisterCancellation = shouldCancelPortForwardStart
+    const unregisterCancellation = shouldTrackChatOperation
       ? registerChatCancellation(trustedChatSessionId, async () => {
-          // Wait for a start that is already in flight, then stop the exact
-          // rule. This prevents cancellation acknowledgement from racing a
-          // late tunnel creation.
+          // Do not acknowledge a generic capability cancellation while the
+          // underlying handler is still running. Port-forward starts also need
+          // an explicit stop after a late tunnel creation completes.
           await operationPromise?.catch(() => {});
-          if (typeof invokeVaultAgent === "function") {
-            await invokeVaultAgent("portforward.stop", {
+          if (shouldCancelPortForwardStart && typeof invokeVaultAgent === "function") {
+            const result = await invokeVaultAgent("portforward.stop", {
               ruleId: scopedParams.ruleId,
               hostId: scopedParams.hostId,
               chatSessionId: trustedChatSessionId,
             });
+            if (!result || result.ok === false) {
+              throw new Error(result?.error || "Port-forward cancellation was not confirmed.");
+            }
           }
         })
       : () => {};
