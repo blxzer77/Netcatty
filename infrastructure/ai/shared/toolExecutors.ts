@@ -104,8 +104,11 @@ export async function executeTerminalExecute(
     return { ok: false, error: 'Tool call cancelled before execution.' };
   }
 
+  let cancellationAcknowledgement: Promise<unknown> | undefined;
   const cancelOnAbort = () => {
-    if (deps.chatSessionId) void deps.bridge.aiCattyCancelExec?.(deps.chatSessionId);
+    cancellationAcknowledgement = deps.chatSessionId && deps.bridge.aiCattyCancelExec
+      ? deps.bridge.aiCattyCancelExec(deps.chatSessionId)
+      : Promise.resolve();
   };
   abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
   let result: Awaited<ReturnType<NetcattyBridge['aiExec']>>;
@@ -113,6 +116,7 @@ export async function executeTerminalExecute(
     result = await bridge.aiExec(sessionId, command, deps.chatSessionId);
   } finally {
     abortSignal?.removeEventListener('abort', cancelOnAbort);
+    await cancellationAcknowledgement?.catch(() => {});
   }
   // Real execution failures (timeout, disconnect, no stream) have an `error` field
   if (!result.ok && result.error) {

@@ -117,7 +117,7 @@ async function invokeCapabilityRpc(
           // the side effect could still be running.
           const acknowledgement = chatSessionId && bridge.aiSetChatSessionCancelled
             ? bridge.aiSetChatSessionCancelled(chatSessionId, true)
-            : Promise.resolve({ ok: true });
+            : Promise.resolve({ ok: false, error: 'No main-process cancellation bridge is available.' });
           void acknowledgement.then(result => {
             resolve(result?.ok === false
               ? { error: result.error || 'Capability cancellation was not acknowledged.' }

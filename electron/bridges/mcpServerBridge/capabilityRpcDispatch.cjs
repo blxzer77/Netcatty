@@ -105,8 +105,29 @@ function createCapabilityRpcDispatcher(deps) {
     portforward: portforwardService,
     session: sessionService,
   };
+  const activeChatCancellations = new Map();
 
-  return async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
+  const registerChatCancellation = (chatSessionId, cancel) => {
+    if (!chatSessionId || typeof cancel !== "function") return () => {};
+    let cancellations = activeChatCancellations.get(chatSessionId);
+    if (!cancellations) {
+      cancellations = new Set();
+      activeChatCancellations.set(chatSessionId, cancellations);
+    }
+    cancellations.add(cancel);
+    return () => {
+      cancellations.delete(cancel);
+      if (cancellations.size === 0) activeChatCancellations.delete(chatSessionId);
+    };
+  };
+
+  const cancelChatSessionOperations = async (chatSessionId) => {
+    const cancellations = activeChatCancellations.get(chatSessionId);
+    if (!cancellations || cancellations.size === 0) return;
+    await Promise.allSettled([...cancellations].map(cancel => Promise.resolve().then(cancel)));
+  };
+
+  const dispatchCapabilityRpc = async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
     if (typeof rpcMethod !== "string" || rpcMethod.startsWith("netcatty/")) {
       return UNROUTED;
     }
@@ -198,12 +219,38 @@ function createCapabilityRpcDispatcher(deps) {
     const hostOpenGeneration = capability.id === "vault.host.open"
       ? deps.captureHostOpenScope?.(params?.chatSessionId)
       : null;
-    const result = await handler(params);
-    if (capability.id === "vault.host.open" && result?.ok !== false && result?.sessionId) {
-      await deps.onHostOpened?.(params?.chatSessionId, result.sessionId, hostOpenGeneration, result);
+    const shouldCancelPortForwardStart = capability.id === "portforward.start"
+      && typeof params?.chatSessionId === "string"
+      && typeof params?.ruleId === "string";
+    let operationPromise;
+    const unregisterCancellation = shouldCancelPortForwardStart
+      ? registerChatCancellation(params.chatSessionId, async () => {
+          // Wait for a start that is already in flight, then stop the exact
+          // rule. This prevents cancellation acknowledgement from racing a
+          // late tunnel creation.
+          await operationPromise?.catch(() => {});
+          if (typeof invokeVaultAgent === "function") {
+            await invokeVaultAgent("portforward.stop", {
+              ruleId: params.ruleId,
+              hostId: params.hostId,
+              chatSessionId: params.chatSessionId,
+            });
+          }
+        })
+      : () => {};
+    try {
+      operationPromise = Promise.resolve(handler(params));
+      const result = await operationPromise;
+      if (capability.id === "vault.host.open" && result?.ok !== false && result?.sessionId) {
+        await deps.onHostOpened?.(params?.chatSessionId, result.sessionId, hostOpenGeneration, result);
+      }
+      return result;
+    } finally {
+      unregisterCancellation();
     }
-    return result;
   };
+  dispatchCapabilityRpc.cancelChatSessionOperations = cancelChatSessionOperations;
+  return dispatchCapabilityRpc;
 }
 
 module.exports = {

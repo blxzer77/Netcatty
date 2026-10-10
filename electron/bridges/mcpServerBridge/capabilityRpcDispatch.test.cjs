@@ -398,6 +398,39 @@ test("dispatchCapabilityRpc routes portforward start to portforward service", as
   assert.equal(result.ruleId, "rule-1");
 });
 
+test("portforward cancellation waits for start and stops the exact rule", async () => {
+  let resolveStart;
+  const invoked = [];
+  const startResult = new Promise((resolve) => { resolveStart = resolve; });
+  const dispatch = createTestDispatcher({
+    invokeVaultAgent: async (op, params) => {
+      invoked.push({ op, params });
+      if (op === "portforward.start") return startResult;
+      return { ok: true, ruleId: params.ruleId };
+    },
+  });
+
+  const pendingStart = dispatch("portforward/start", {
+    chatSessionId: "chat-cancel-pf",
+    ruleId: "rule-1",
+    hostId: "host-1",
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const pendingCancel = dispatch.cancelChatSessionOperations("chat-cancel-pf");
+  let settled = false;
+  void pendingCancel.then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  resolveStart({ ok: true, ruleId: "rule-1" });
+  await pendingStart;
+  await pendingCancel;
+  assert.deepEqual(invoked, [
+    { op: "portforward.start", params: { ruleId: "rule-1", hostId: "host-1", chatSessionId: "chat-cancel-pf" } },
+    { op: "portforward.stop", params: { ruleId: "rule-1", hostId: "host-1", chatSessionId: "chat-cancel-pf" } },
+  ]);
+});
+
 test("dispatchCapabilityRpc lists port forwards from the configured runtime", async () => {
   const calls = [];
   const dispatch = createTestDispatcher({

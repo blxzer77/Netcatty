@@ -69,8 +69,32 @@ interface ApprovedPlanScope {
 }
 
 const pendingPlans = new Map<string, PendingPlanEntry>();
-const consumedPlanIds = new Set<string>();
+const consumedPlanIds = new Map<string, number>();
+const CONSUMED_PLAN_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_CONSUMED_PLAN_IDS = 4096;
 const approvedPlansByChatSession = new Map<string, ApprovedPlanScope[]>();
+
+function pruneConsumedPlanIds(now = Date.now()): void {
+  for (const [planId, consumedAt] of consumedPlanIds) {
+    if (now - consumedAt > CONSUMED_PLAN_TTL_MS) consumedPlanIds.delete(planId);
+  }
+  while (consumedPlanIds.size > MAX_CONSUMED_PLAN_IDS) {
+    const oldest = consumedPlanIds.keys().next().value;
+    if (oldest === undefined) break;
+    consumedPlanIds.delete(oldest);
+  }
+}
+
+function isConsumedPlanId(planId: string): boolean {
+  pruneConsumedPlanIds();
+  return consumedPlanIds.has(planId);
+}
+
+function markPlanIdConsumed(planId: string): void {
+  consumedPlanIds.delete(planId);
+  consumedPlanIds.set(planId, Date.now());
+  pruneConsumedPlanIds();
+}
 
 const proposedListeners = new Set<PlanProposedListener>();
 const resolvedListeners = new Set<PlanResolvedListener>();
@@ -160,7 +184,7 @@ export interface ProposePlanInput {
  */
 export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
   const planId = input.planId ?? nextPlanEventId('plan');
-  if (consumedPlanIds.has(planId)) {
+  if (isConsumedPlanId(planId)) {
     return Promise.resolve({
       outcome: 'denied',
       note: 'This plan id was already consumed; submit a new plan instead of replaying it.',
@@ -216,7 +240,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
     const denyAborted = () => {
       if (!pendingPlans.has(planId)) return;
       pendingPlans.delete(planId);
-      consumedPlanIds.add(planId);
+      markPlanIdConsumed(planId);
       const decision: PlanDecision = {
         outcome: 'denied',
         note: 'Plan approval was cancelled with the owning turn.',
@@ -239,7 +263,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
     const denyTimedOut = () => {
       if (!pendingPlans.has(planId)) return;
       pendingPlans.delete(planId);
-      consumedPlanIds.add(planId);
+      markPlanIdConsumed(planId);
       input.signal?.removeEventListener('abort', denyAborted);
       const decision: PlanDecision = {
         outcome: 'timeout',
@@ -373,7 +397,7 @@ export function resolvePlan(
   }
 
   pendingPlans.delete(planId);
-  consumedPlanIds.add(planId);
+  markPlanIdConsumed(planId);
   entry.dispose?.();
   entry.resolve(normalized);
 
@@ -519,7 +543,7 @@ export function clearChatSessionPlans(chatSessionId: string | undefined): void {
   for (const [planId, entry] of pendingPlans) {
     if (entry.plan.chatSessionId !== chatSessionId) continue;
     dropped.push(planId);
-    consumedPlanIds.add(planId);
+    markPlanIdConsumed(planId);
     pendingPlans.delete(planId);
     entry.dispose?.();
     const decision = { outcome: 'denied' as const, note: 'Chat session was stopped.' };

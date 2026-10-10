@@ -193,8 +193,10 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
       const cancelled = abortSignal
         ? new Promise<unknown>(resolve => {
             onAbort = () => {
-              if (sessionId) void netcattyBridge.aiSetChatSessionCancelled?.(sessionId, true);
-              resolve(null);
+              const acknowledgement = sessionId && netcattyBridge.aiSetChatSessionCancelled
+                ? netcattyBridge.aiSetChatSessionCancelled(sessionId, true)
+                : Promise.resolve({ ok: false });
+              void acknowledgement.then(() => resolve(null)).catch(() => resolve(null));
             };
             abortSignal.addEventListener('abort', onAbort, { once: true });
           })

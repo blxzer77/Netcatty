@@ -2332,10 +2332,12 @@ async function applyChatSessionCancelled(chatSessionId, cancelled) {
     cancelBackgroundJobsForSession(chatSessionId);
     cancelWorkerBackgroundJobsForSession(chatSessionId);
     clearPendingApprovals(chatSessionId);
-    // Do not acknowledge cancellation until tracked SFTP operations have
-    // received and completed their cancellation callbacks. The renderer uses
-    // this acknowledgement to keep its operation queue occupied.
+    // Do not acknowledge cancellation until tracked SFTP operations and
+    // capability-owned side effects have received and completed their
+    // cancellation callbacks. The renderer uses this acknowledgement to keep
+    // its operation queue occupied.
     await cancelSftpOpsForSession(chatSessionId);
+    await dispatchCapabilityRpc.cancelChatSessionOperations?.(chatSessionId);
   } else {
     setChatSessionCancelled(chatSessionId, false);
   }
