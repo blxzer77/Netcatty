@@ -173,6 +173,97 @@ test("translatePiEvent maps text/thinking and tool lifecycle events", () => {
   ]);
 });
 
+test("translatePiEvent reports message_end usage once and ignores zero streaming snapshots", () => {
+  const emitter = makeEmitter();
+  const state = {};
+  const streamingUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} };
+  const finalUsage = {
+    input: 1183, output: 2, cacheRead: 10240, cacheWrite: 0, reasoning: 0,
+    totalTokens: 11425, cost: {},
+  };
+  translatePiEvent({
+    type: "message_update",
+    usage: streamingUsage,
+    assistantMessageEvent: { type: "text_delta", delta: "answer" },
+  }, emitter, state);
+  translatePiEvent({ type: "message_end", message: { role: "assistant", usage: finalUsage } }, emitter, state);
+  // turn_end repeats the same snapshot; it must not be reported twice.
+  translatePiEvent({ type: "turn_end", message: { role: "assistant", usage: finalUsage }, toolResults: [] }, emitter, state);
+  // Tool results can carry nested model usage, which is not this turn's usage.
+  translatePiEvent({ type: "message_end", message: { role: "toolResult", usage: { input: 5, output: 5, totalTokens: 10 } } }, emitter, state);
+  assert.deepEqual(emitter.calls, [
+    ["text", "answer"],
+    ["usage", {
+      inputTokens: 11423,
+      cachedInputTokens: 10240,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      totalTokens: 11425,
+    }],
+  ]);
+});
+
+test("translatePiEvent still accepts an agent_end usage payload", () => {
+  const emitter = makeEmitter();
+  translatePiEvent({
+    type: "agent_end",
+    usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+    messages: [],
+  }, emitter, {});
+  assert.deepEqual(emitter.calls, [["usage", {
+    inputTokens: 7,
+    cachedInputTokens: 0,
+    outputTokens: 3,
+    reasoningTokens: 0,
+    totalTokens: 10,
+  }]]);
+});
+
+test("runPiTurn reports provider usage that only arrives on the completed message", async () => {
+  const emitter = makeEmitter();
+  const child = makeFakePi();
+  child.stdin.write = (line) => {
+    const command = JSON.parse(line);
+    queueMicrotask(() => {
+      if (command.type === "get_state") {
+        child.stdout.emit("data", Buffer.from(JSON.stringify({
+          id: command.id, type: "response", command: "get_state", success: true, data: {},
+        }) + "\n"));
+        return;
+      }
+      if (command.type !== "prompt") return;
+      const finalUsage = {
+        input: 100, output: 5, cacheRead: 40, cacheWrite: 10, reasoning: 2,
+        totalTokens: 155, cost: {},
+      };
+      const records = [
+        { id: command.id, type: "response", command: "prompt", success: true, data: { disposition: "started" } },
+        {
+          type: "message_update",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} },
+          assistantMessageEvent: { type: "text_delta", delta: "ok" },
+        },
+        { type: "message_end", message: { role: "assistant", usage: finalUsage } },
+        { type: "turn_end", message: { role: "assistant", usage: finalUsage }, toolResults: [] },
+        { type: "agent_end", messages: [], willRetry: false },
+        { type: "agent_settled", aborted: false },
+      ];
+      child.stdout.emit("data", Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n"));
+    });
+    return true;
+  };
+  await runPiTurn({ prompt: "hello", emitter, spawnImpl: () => child });
+  assert.deepEqual(emitter.calls.filter((call) => call[0] === "usage"), [["usage", {
+    inputTokens: 150,
+    cachedInputTokens: 40,
+    outputTokens: 5,
+    reasoningTokens: 2,
+    totalTokens: 155,
+  }]]);
+  assert.deepEqual(emitter.calls.filter((call) => call[0] === "text"), [["text", "ok"]]);
+  assert.equal(emitter.calls.some((call) => call[0] === "done"), true);
+});
+
 test("runPiTurn injects spawn and speaks get_state/prompt over JSONL", async () => {
   const emitter = makeEmitter();
   const child = makeFakePi();

@@ -153,19 +153,41 @@ function extractPiError(value, fallback = "Pi RPC turn failed") {
   return String(value);
 }
 
-function emitPiUsage(emitter, usage) {
-  if (!usage || typeof usage !== "object" || typeof emitter?.usage !== "function") return;
-  const inputTokens = usage.inputTokens ?? usage.input ?? 0;
-  const outputTokens = usage.outputTokens ?? usage.output ?? 0;
-  const cachedInputTokens = usage.cachedInputTokens ?? usage.cacheRead ?? 0;
-  const totalTokens = usage.totalTokens ?? usage.total ?? (Number(inputTokens) + Number(outputTokens));
+/**
+ * Map Pi's `Usage` onto AgentUsage and report it once per distinct snapshot.
+ *
+ * Pi follows Anthropic semantics: `input` excludes cache reads/writes and
+ * `totalTokens` is their sum, while AgentUsage expects `inputTokens` to be the
+ * whole prompt with `cachedInputTokens` as the cached subset (same convention as
+ * the Claude/CodeBuddy drivers).  A snapshot is skipped when it carries no
+ * usable numbers, because many providers leave the streaming cumulative usage
+ * at zero and only fill it in on the completed message.
+ */
+function emitPiUsage(emitter, usage, state) {
+  if (!usage || typeof usage !== "object" || typeof emitter?.usage !== "function") return false;
+  const uncachedInputTokens = Number(usage.inputTokens ?? usage.input) || 0;
+  const cachedInputTokens = Number(usage.cachedInputTokens ?? usage.cacheRead) || 0;
+  const cacheWriteTokens = Number(usage.cacheWrite) || 0;
+  const outputTokens = Number(usage.outputTokens ?? usage.output) || 0;
+  const reasoningTokens = Number(usage.reasoningTokens ?? usage.reasoning) || 0;
+  const inputTokens = uncachedInputTokens + cachedInputTokens + cacheWriteTokens;
+  let totalTokens = Number(usage.totalTokens ?? usage.total) || 0;
+  if (!totalTokens && (inputTokens || outputTokens)) totalTokens = inputTokens + outputTokens;
+  if (!inputTokens && !outputTokens && !reasoningTokens && !totalTokens) return false;
+
+  const snapshotKey = `${inputTokens}:${cachedInputTokens}:${outputTokens}:${reasoningTokens}:${totalTokens}`;
+  if (state) {
+    if (state.usageKey === snapshotKey) return true;
+    state.usageKey = snapshotKey;
+  }
   emitter.usage({
     inputTokens,
     cachedInputTokens,
     outputTokens,
-    reasoningTokens: usage.reasoningTokens ?? usage.reasoning ?? 0,
+    reasoningTokens,
     totalTokens,
   });
+  return true;
 }
 
 function closePiReasoning(state, emitter) {
@@ -195,7 +217,7 @@ function translatePiEvent(event, emitter, state = {}) {
 
   if (type === "message_update") {
     const update = event.assistantMessageEvent || event.messageEvent || event.event || {};
-    if (event.usage) emitPiUsage(emitter, event.usage);
+    if (event.usage) emitPiUsage(emitter, event.usage, state);
     switch (String(update.type || "")) {
       case "thinking_delta":
         if (update.delta) {
@@ -231,10 +253,20 @@ function translatePiEvent(event, emitter, state = {}) {
     return { settled: false, error: false, content: true };
   }
 
+  if (type === "message_end" || type === "turn_end") {
+    // Pi only attaches provider-exact usage to the completed assistant message;
+    // the message_update snapshots can stay all zero for the whole stream.
+    const message = event.message;
+    if (message?.role === "assistant" && message.usage) {
+      emitPiUsage(emitter, message.usage, state);
+    }
+    return { settled: false, error: false, content: false };
+  }
+
   if (type === "agent_end") {
     closePiReasoning(state, emitter);
     state.agentEnded = true;
-    if (event.usage) emitPiUsage(emitter, event.usage);
+    if (event.usage) emitPiUsage(emitter, event.usage, state);
     return { settled: false, error: false, content: false };
   }
 
