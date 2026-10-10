@@ -31,7 +31,7 @@ import {
 } from '../cattyRuntime';
 import { computeTotalInputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../contextBudget';
 import { clearChatSessionCancelled } from '../agentStop';
-import { clearApprovedPlans } from '../../shared/planGate';
+import { clearChatSessionPlans } from '../../shared/planGate';
 import { collectMachineRecordSummaries } from '../machineRecord';
 import { parseRunbook } from '../runbook';
 import { isRequestTooLargeError } from '../../errorClassifier';
@@ -599,8 +599,9 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     ui.updateLastMessage(sessionId, msg => msg.statusText ? { ...msg, statusText: '' } : msg);
     ui.setStreamingForScope(sessionId, false);
     context.autoTitleSession(sessionId, context.titleText ?? trimmed);
-    // Plan scope grants are per turn: a later turn must ask again.
-    clearApprovedPlans(sessionId);
+    // A turn owns both its grants and any pending approval card. Stop/abort or
+    // normal completion must not leave a stale plan that can be approved later.
+    clearChatSessionPlans(sessionId);
   }
 }
 

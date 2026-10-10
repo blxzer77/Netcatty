@@ -786,12 +786,12 @@
       }
     },
     "policy": {
-      "write": true,
+      "write": false,
       "sensitiveRead": false,
       "longRunning": true,
       "requiresChatSession": true,
       "bypassesObserverBlock": false,
-      "bypassesApproval": false,
+      "bypassesApproval": true,
       "bypassesChatCancel": false
     }
   },

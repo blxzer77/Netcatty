@@ -30,6 +30,9 @@ describe('proxy-risk inference', () => {
     assert.equal(inferProxyRisk([
       { id: 's1', title: 'Read', toolName: 'terminal_execute', sessionId: 's-1', command: 'uptime' },
     ]), false);
+    assert.equal(inferProxyRisk([
+      { id: 's1', title: 'Indirect reload', toolName: 'terminal_execute', sessionId: 's-1', command: 'systemctl $(printf reload) nginx' },
+    ]), true);
   });
 });
 

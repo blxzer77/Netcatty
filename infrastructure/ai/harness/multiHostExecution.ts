@@ -58,6 +58,25 @@ export interface RunCommandOnSessionsInput {
 
 const MAX_COMPARE_LINES_PER_HOST = 20;
 
+const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|cat|head|tail|grep|rg|awk|sed|ps|top|ss|netstat|nginx|systemctl|service|docker|kubectl|git|find)(?:\s|$)/i;
+
+/**
+ * Compare is intentionally conservative: a shell command is not considered
+ * read-only merely because the tool is named compare. Reject shell composition,
+ * redirection and known mutators before allowing the fan-out.
+ */
+export function isReadOnlyCompareCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || /[;&|`$<>]/.test(trimmed)) return false;
+  if (/(?:^|\s)(?:rm|mv|cp|mkdir|touch|chmod|chown|kill|reboot|shutdown|tee)(?:\s|$)/i.test(trimmed)) return false;
+  if (/(?:sed|perl)\s+[^\n]*\s-i(?:\s|$)/i.test(trimmed)) return false;
+  if (/(?:systemctl|service)\s+(?:(?:\S+\s+)?(?:start|restart|reload|stop|enable|disable|mask|unmask)\b|(?:start|restart|reload|stop|enable|disable|mask|unmask)\s+\S+)/i.test(trimmed)) return false;
+  if (/\bnginx\s+-s\s+(?:reload|stop|quit)\b/i.test(trimmed)) return false;
+  if (/(?:ip|iptables|nft|ufw|firewall-cmd)\s+(?:route|link|addr|add|delete|del|insert|remove|flush|enable|disable)/i.test(trimmed)) return false;
+  if (/(?:find\s+[^\n]*\s-(?:exec|execdir|delete))(?:\s|$)/i.test(trimmed)) return false;
+  return READ_ONLY_COMPARE_COMMAND.test(trimmed);
+}
+
 /**
  * Run one command across several hosts.
  *
@@ -78,7 +97,7 @@ export async function runCommandOnSessions(
   const runHost = async (sessionId: string): Promise<HostCommandOutcome> => {
     const slot = input.reserveSlot?.(sessionId) ?? null;
     try {
-      await slot?.ready;
+      await waitForSlotOrAbort(slot?.ready, input.signal);
       if (input.signal?.aborted) return cancelledOutcome(sessionId);
       return await input.runOnHost(sessionId);
     } catch (error) {
@@ -265,6 +284,27 @@ function dedupe(ids: readonly string[]): string[] {
     result.push(id);
   }
   return result;
+}
+
+async function waitForSlotOrAbort(
+  ready: Promise<void> | undefined,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (!ready || !signal || signal.aborted) {
+    if (signal?.aborted) return;
+    await ready;
+    return;
+  }
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<void>(resolve => {
+    onAbort = resolve;
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([ready, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function cancelledOutcome(sessionId: string): HostCommandOutcome {

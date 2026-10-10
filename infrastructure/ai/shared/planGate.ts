@@ -240,7 +240,11 @@ export function cancelPlanTimeout(planId: string): void {
  * for per-tool approval inside that chat session. Everything outside the scope
  * still asks.
  */
-export function resolvePlan(planId: string, decision: boolean | PlanDecision): void {
+export function resolvePlan(
+  planId: string,
+  decision: boolean | PlanDecision,
+  expectedChatSessionId?: string,
+): void {
   const outcome: PlanOutcome = typeof decision === 'boolean'
     ? (decision ? 'approved' : 'denied')
     : decision.outcome;
@@ -251,6 +255,14 @@ export function resolvePlan(planId: string, decision: boolean | PlanDecision): v
   if (!entry) {
     // Stale UI click after the entry was already drained — do not fan out a
     // second resolution.
+    return;
+  }
+  if (
+    expectedChatSessionId !== undefined
+    && entry.plan.chatSessionId !== expectedChatSessionId
+  ) {
+    // The renderer must not be able to resolve a plan belonging to another
+    // chat/session, even if a stale callback retained the plan id.
     return;
   }
   if (normalized.outcome === 'approved' && entry.validateApproval) {

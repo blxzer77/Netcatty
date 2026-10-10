@@ -127,6 +127,7 @@ export function runbookStepsToPlanSteps(runbook: Runbook): PlanStep[] {
   return runbook.steps.map(step => ({
     id: step.id,
     title: step.title,
+    toolName: 'terminal_execute',
     ...(step.command ? { command: step.command } : {}),
     ...(step.verify ? { verification: step.verify } : {}),
   }));

@@ -1097,6 +1097,25 @@ describe('capabilityTools multi-host execution', () => {
     assert.match(result.conclusion, /2 of 3 hosts agree/);
   });
 
+  it('compare_machines rejects commands that can mutate hosts', async () => {
+    const { tools, toolsContext } = multiHostTools(async () => ({
+      ok: true,
+      stdout: 'must not run',
+      stderr: '',
+      exitCode: 0,
+    }));
+    const result = await withCattyToolContext(
+      tools.compare_machines,
+      toolsContext.compare_machines,
+      'compare-reject-write',
+    ).execute({
+      sessionIds: JSON.stringify(['session-a', 'session-b']),
+      command: 'systemctl reload nginx',
+    }) as { error: string };
+
+    assert.match(result.error, /only a single, conservative read-only command/);
+  });
+
   it('compare_machines reports identical hosts without listing differences', async () => {
     const { tools, toolsContext } = multiHostTools(okExec('nginx/1.24.0'));
     const result = await withCattyToolContext(

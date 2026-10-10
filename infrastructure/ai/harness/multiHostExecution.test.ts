@@ -148,6 +148,28 @@ describe('runCommandOnSessions', () => {
     assert.match(result.hosts[1]?.error ?? '', /cancelled/i);
   });
 
+  it('cancellation wakes a host waiting for a queue slot', async () => {
+    const controller = new AbortController();
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const resultPromise = runCommandOnSessions({
+      sessionIds: ['a', 'b'],
+      command: 'uptime',
+      signal: controller.signal,
+      reserveSlot: () => ({ ready: blocked, release: () => {} }),
+      runOnHost: async sessionId => outcome(sessionId),
+    });
+
+    await new Promise(resolve => setImmediate(resolve));
+    controller.abort();
+    const result = await Promise.race([
+      resultPromise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('cancellation did not wake the queue')), 100)),
+    ]);
+    release();
+    assert.equal(result.hosts.every(host => host.ok === false), true);
+  });
+
   it('releases slots even when a host throws', async () => {
     const reserved: string[] = [];
     const result = await runCommandOnSessions({

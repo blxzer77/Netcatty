@@ -319,8 +319,9 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
 
   const settlePlan = useCallback((planId: string, outcome: 'approved' | 'denied') => {
     const plan = pendingPlans.get(planId);
-    if (plan?.chatSessionId && activeSessionId && plan.chatSessionId !== activeSessionId) return;
-    resolvePlan(planId, { outcome });
+    if (!plan) return;
+    if (plan.chatSessionId && activeSessionId && plan.chatSessionId !== activeSessionId) return;
+    resolvePlan(planId, { outcome }, plan.chatSessionId);
     setPendingPlans(prev => { const m = new Map(prev); m.delete(planId); return m; });
   }, [activeSessionId, pendingPlans]);
 

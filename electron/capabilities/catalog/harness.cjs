@@ -131,12 +131,12 @@ const HARNESS_CAPABILITIES = [
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Run the same read-only command on several sessions and return which hosts agree and how they differ.",
     policy: {
-      write: true,
+      write: false,
       sensitiveRead: false,
       longRunning: true,
       requiresChatSession: true,
       bypassesObserverBlock: false,
-      bypassesApproval: false,
+      bypassesApproval: true,
       bypassesChatCancel: false,
     },
     surfaces: {

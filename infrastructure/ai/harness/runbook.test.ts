@@ -88,8 +88,8 @@ describe('runbook to plan', () => {
   it('converts steps mechanically, keeping commands and verification', () => {
     const steps = runbookStepsToPlanSteps(parseRunbook(runbookText)!);
     assert.deepEqual(steps, [
-      { id: 'step-1', title: 'Back up the current certificate', command: 'certbot certificates --dry-run', verification: 'the dry run reports success' },
-      { id: 'step-2', title: 'Renew', command: 'certbot renew', verification: 'systemctl reload exits 0' },
+      { id: 'step-1', title: 'Back up the current certificate', toolName: 'terminal_execute', command: 'certbot certificates --dry-run', verification: 'the dry run reports success' },
+      { id: 'step-2', title: 'Renew', toolName: 'terminal_execute', command: 'certbot renew', verification: 'systemctl reload exits 0' },
     ]);
     // Targets are resolved by the agent, never invented here.
     for (const step of steps) {

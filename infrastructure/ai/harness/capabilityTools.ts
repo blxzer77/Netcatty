@@ -19,6 +19,7 @@ import { proposePlan, type PlanDecision } from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
 import {
   compareHostOutputs,
+  isReadOnlyCompareCommand,
   runCommandOnSessions,
   type HostCommandOutcome,
 } from './multiHostExecution';
@@ -375,6 +376,7 @@ function runbookPlanMismatch(steps: PlanStep[], runbook: Runbook): string | null
     if (
       actual.id !== required.id
       || actual.title !== required.title
+      || actual.toolName !== required.toolName
       || actual.command !== required.command
       || actual.verification !== required.verification
     ) {
@@ -567,7 +569,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
     case 'harness.machines.compare': {
       // Multi-host work: the same command on several machines, each host
       // reported on its own so one failure cannot hide the others.
-      if (deps.permissionMode === 'observer') {
+      if (deps.permissionMode === 'observer' && spec.capabilityId !== 'harness.machines.compare') {
         return {
           error: 'Observer mode is read-only: a command on several hosts cannot run. Switch to confirm or auto in Settings → AI → Safety, then ask again.',
         };
@@ -580,6 +582,9 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       if (parsedIds.error) return { error: parsedIds.error };
       const command = typeof args.command === 'string' ? args.command.trim() : '';
       if (!command) return { error: 'A multi-host run needs a command.' };
+      if (spec.capabilityId === 'harness.machines.compare' && !isReadOnlyCompareCommand(command)) {
+        return { error: 'compare_machines accepts only a single, conservative read-only command. Use terminal_batch for an explicit approved write operation.' };
+      }
       if (parsedIds.ids.length === 0) {
         return { error: 'A multi-host run needs at least one session ID in scope.' };
       }

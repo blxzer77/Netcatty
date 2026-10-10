@@ -25,7 +25,7 @@ const PROXY_RISK_TOOL_NAMES = new Set([
   'portforward.stop',
 ]);
 
-const PROXY_RISK_PATTERN = /(?:proxy|nginx|haproxy|traefik|caddy|squid|v2ray|xray|frp|clash|envoy|iptables|nftables?|firewall|ip\s+route|route\s+(?:add|del|change)|resolv\.conf|dns|netplan|networkmanager|systemctl\s+(?:restart|reload|stop|disable|mask))/i;
+const PROXY_RISK_PATTERN = /(?:proxy|nginx|haproxy|traefik|caddy|squid|v2ray|xray|frp|clash|envoy|iptables|nftables?|firewall|ip\s+route|route\s+(?:add|del|change)|resolv\.conf|dns|netplan|networkmanager|(?:systemctl|service|rc-service|launchctl)\s+(?:\S+\s+)?(?:start|restart|reload|stop|disable|mask|enable)|\$|`|\beval\b|\b(?:sh|bash|zsh)\s+-c)/i;
 
 /** Infer proxy-path risk from the actual planned tools and payloads. */
 export function inferProxyRisk(steps: readonly PlanStep[]): boolean {
