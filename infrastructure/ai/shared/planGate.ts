@@ -26,6 +26,13 @@ import type {
   PlanStep,
 } from '../harness/types';
 
+export interface ApprovedPlanTargetIdentity {
+  sessionId: string;
+  hostId: string;
+  hostname: string;
+  protocol: string;
+}
+
 export interface ProposedPlan {
   planId: string;
   goal: string;
@@ -33,6 +40,8 @@ export interface ProposedPlan {
   preconditions?: PlanPreconditionResult[];
   /** Chat session the plan belongs to; used to scope grants and cleanup. */
   chatSessionId?: string;
+  /** Immutable target identities captured before user approval. */
+  targetIdentities?: readonly ApprovedPlanTargetIdentity[];
 }
 
 export type PlanOutcome = 'approved' | 'denied' | 'timeout';
@@ -54,6 +63,8 @@ interface PendingPlanEntry {
   validateApproval?: () => PlanDecision | void;
   /** Re-checks session/host identity immediately before each execution. */
   validateExecution?: () => string | null;
+  /** Immutable target identities captured before user approval. */
+  targetIdentities?: readonly ApprovedPlanTargetIdentity[];
   /** Clears the idle auto-deny timer without resolving the plan. */
   cancelTimeout?: () => void;
   /** Drops the idle timer because the plan already settled. */
@@ -65,6 +76,8 @@ interface ApprovedPlanScope {
   steps: PlanStep[];
   /** Re-checks session/host identity immediately before each execution. */
   validateExecution?: () => string | null;
+  /** Immutable target identities captured before user approval. */
+  targetIdentities: readonly ApprovedPlanTargetIdentity[];
   /** The next executable step that may be claimed by a write tool call. */
   nextStepIndex: number;
   /** Any failed, cancelled, or diverged write stops the remaining grant. */
@@ -185,6 +198,8 @@ export interface ProposePlanInput {
   signal?: AbortSignal;
   /** Re-checks target session/host identity before each covered execution. */
   validateExecution?: () => string | null;
+  /** Immutable target identities captured before user approval. */
+  targetIdentities?: readonly ApprovedPlanTargetIdentity[];
 }
 
 /**
@@ -216,6 +231,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
     steps: input.steps,
     preconditions: input.preconditions,
     chatSessionId: input.chatSessionId,
+    targetIdentities: input.targetIdentities,
   };
   const presentedPlan: ProposedPlan = {
     ...plan,
@@ -328,6 +344,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
       resolve: settle,
       validateApproval: input.validateApproval,
       validateExecution: input.validateExecution,
+      targetIdentities: input.targetIdentities,
       cancelTimeout: () => {
         const remainingHard = hardDeadlineAt - Date.now();
         if (remainingHard <= 0) {
@@ -460,6 +477,7 @@ function registerApprovedPlan(
     planId: plan.planId,
     steps: plan.steps,
     validateExecution,
+    targetIdentities: plan.targetIdentities ?? [],
     nextStepIndex: 0,
   });
   approvedPlansByChatSession.set(chatSessionId, scopes);
@@ -526,6 +544,33 @@ function matchesCurrentPlanStep(
   if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) return false;
   const expectedArgs = expectedPlanArgs(step);
   return Boolean(expectedArgs && samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs));
+}
+
+/** Return the immutable identity captured for the currently claimed step. */
+export function getClaimedPlanTargetIdentities(
+  chatSessionId: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+): readonly ApprovedPlanTargetIdentity[] {
+  if (!chatSessionId) return [];
+  const scopes = approvedPlansByChatSession.get(chatSessionId);
+  if (!scopes?.length) return [];
+  const comparableArgs = normalizePlanArgs(toolName, args);
+  for (const scope of scopes) {
+    if (!matchesCurrentPlanStep(scope, toolName, comparableArgs)) continue;
+    const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
+    const sessionIds = Array.isArray(comparableArgs.sessionIds)
+      ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
+      : [];
+    const hostId = typeof comparableArgs.hostId === 'string' ? comparableArgs.hostId : undefined;
+    const selected = scope.targetIdentities.filter(identity =>
+      (sessionId ? identity.sessionId === sessionId : false)
+      || sessionIds.includes(identity.sessionId)
+      || (hostId ? identity.hostId === hostId : false),
+    );
+    return selected;
+  }
+  return [];
 }
 
 /** Commit the current approved step only after its tool handler succeeded. */

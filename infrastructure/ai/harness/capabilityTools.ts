@@ -18,11 +18,13 @@ import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutio
 import {
   commitToolCoveredByApprovedPlan,
   failToolCoveredByApprovedPlan,
+  getClaimedPlanTargetIdentities,
   hasUnsafePlanCommand,
   proposePlan,
   type PlanDecision,
 } from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
+import type { ApprovedPlanTargetIdentity } from '../shared/planGate';
 import {
   compareHostOutputs,
   isReadOnlyCompareCommand,
@@ -139,7 +141,7 @@ async function invokeCapabilityRpc(
     const result = await (cancellation ? Promise.race([request, cancellation]) : request);
     if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) {
       await request.catch(() => {});
-      return { error: result.error };
+      return { error: (result as { error?: string }).error || 'Capability cancellation was not acknowledged.' };
     }
     if (abortSignal?.aborted && !cancellation) {
       return { error: 'Capability cancellation is unavailable; the operation was allowed to settle before releasing the queue.' };
@@ -626,17 +628,10 @@ async function prepareMachineNotesWrite(
   };
 }
 
-interface PlanTargetIdentity {
-  sessionId: string;
-  hostId: string;
-  hostname: string;
-  protocol: string;
-}
-
 function capturePlanTargetIdentities(
   steps: readonly PlanStep[],
   context: ExecutorContext,
-): PlanTargetIdentity[] {
+): ApprovedPlanTargetIdentity[] {
   const sessionIds = new Set(steps.flatMap(step => [
     ...(step.sessionId ? [step.sessionId] : []),
     ...(step.sessionIds ?? []),
@@ -662,7 +657,7 @@ function capturePlanTargetIdentities(
 }
 
 function validatePlanTargetIdentities(
-  identities: readonly PlanTargetIdentity[],
+  identities: readonly ApprovedPlanTargetIdentity[],
   context: ExecutorContext,
 ): string | null {
   for (const identity of identities) {
@@ -878,6 +873,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         steps,
         preconditions: planPreconditions.length > 0 ? planPreconditions : undefined,
         chatSessionId,
+        targetIdentities,
         validateApproval,
         signal: ctx.abortSignal,
         validateExecution: () => {
@@ -1258,8 +1254,14 @@ function createCatalogTool(spec: CattyToolSpec) {
             };
           }
           {
-            const target = (typeof deps.context === 'function' ? deps.context() : deps.context).sessions
-              .find(session => session.sessionId === sid);
+            const currentSessions = (typeof deps.context === 'function' ? deps.context() : deps.context).sessions;
+            const approvedTargets = getClaimedPlanTargetIdentities(
+              deps.chatSessionId,
+              spec.toolName,
+              args as Record<string, unknown>,
+            );
+            const target = approvedTargets.find(identity => identity.sessionId === sid)
+              ?? currentSessions.find(session => session.sessionId === sid);
             const result = await executeTerminalExecute(
               deps,
               { sessionId: sid, command },
@@ -1356,9 +1358,15 @@ function createCatalogTool(spec: CattyToolSpec) {
 
         let rpcParams = args as Record<string, unknown>;
         const rpcContext = typeof deps.context === 'function' ? deps.context() : deps.context;
-        const rpcTarget = typeof rpcParams.sessionId === 'string'
-          ? rpcContext.sessions.find(session => session.sessionId === rpcParams.sessionId)
-          : undefined;
+        const approvedTargets = getClaimedPlanTargetIdentities(
+          deps.chatSessionId,
+          spec.toolName,
+          rpcParams,
+        );
+        const rpcTarget = approvedTargets[0]
+          ?? (typeof rpcParams.sessionId === 'string'
+            ? rpcContext.sessions.find(session => session.sessionId === rpcParams.sessionId)
+            : undefined);
         if (rpcTarget?.hostId) {
           rpcParams = {
             ...rpcParams,
