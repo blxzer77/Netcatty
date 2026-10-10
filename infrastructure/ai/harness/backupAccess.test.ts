@@ -33,6 +33,19 @@ describe('proxy-risk inference', () => {
     assert.equal(inferProxyRisk([
       { id: 's1', title: 'Indirect reload', toolName: 'terminal_execute', sessionId: 's-1', command: 'systemctl $(printf reload) nginx' },
     ]), true);
+    for (const command of [
+      'ip link set eth0 down',
+      'echo nameserver 1.1.1.1 > /etc/resolv.conf',
+      'netsh interface ip set dns name="Ethernet" static 1.1.1.1',
+      'powershell -Command Set-NetFirewallProfile -Enabled False',
+    ]) {
+      assert.equal(inferProxyRisk([
+        { id: 's1', title: 'Unknown network write', toolName: 'terminal_execute', sessionId: 's-1', command },
+      ]), true, command);
+    }
+    assert.equal(inferProxyRisk([
+      { id: 's1', title: 'SFTP config write', toolName: 'sftp_write_file', sessionId: 's-1', args: { sessionId: 's-1', path: '/etc/hosts', content: 'x' } },
+    ]), true);
   });
 });
 

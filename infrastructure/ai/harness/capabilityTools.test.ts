@@ -68,6 +68,23 @@ describe('capabilityTools session queue keys', () => {
     assert.equal(sameHostDifferentSession, 'host:id:host-1');
   });
 
+  it('uses canonical hostname fallback when hostId is absent', () => {
+    const key = resolveSessionQueueKeyForTests(
+      {
+        capabilityId: 'terminal.execute',
+        toolName: 'terminal_execute',
+        policy: { write: true, bypassesApproval: false },
+      },
+      { sessionId: 'session-b', command: 'ls' },
+      'chat-3',
+      { sessions: [
+        { sessionId: 'session-a', hostname: 'Shared.Example', protocol: 'ssh' },
+        { sessionId: 'session-b', hostname: 'shared.example', protocol: 'ssh' },
+      ] } as never,
+    );
+    assert.equal(key, 'host:name:shared.example:ssh');
+  });
+
   it('keeps reads on the same session ordered per chat session', () => {
     const key = resolveSessionQueueKeyForTests(
       {
@@ -927,6 +944,26 @@ describe('capabilityTools submit_plan', () => {
     }) as { error: string };
 
     assert.match(result.error, /inconsistently between its summary fields and args/);
+  });
+
+  it('rejects plan targets outside the live host scope', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-wrong-host');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-wrong-host',
+    ).execute({
+      goal: 'update host record',
+      steps: JSON.stringify([{
+        id: 's1',
+        title: 'Update notes',
+        toolName: 'host_notes_set',
+        args: { hostId: 'host-not-in-scope', notes: '<!-- netcatty:agent-record:start -->\nrole: web\n<!-- netcatty:agent-record:end -->' },
+      }]),
+    }) as { error: string };
+
+    assert.match(result.error, /not connected in the current scope/);
   });
 
   it('merges and sanitizes the machine record on host notes writes', async () => {

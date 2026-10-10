@@ -122,7 +122,7 @@ export const PlanApprovalCard: React.FC<{
         <Button variant="ghost" size="sm" onClick={onReject}>
           {t('ai.plan.reject')}
         </Button>
-        <Button size="sm" onClick={onApprove}>
+        <Button size="sm" onClick={onApprove} disabled={failedPreconditions.length > 0}>
           {t('ai.plan.approve')}
         </Button>
       </div>
@@ -130,7 +130,7 @@ export const PlanApprovalCard: React.FC<{
   );
 };
 
-const PLAN_ARG_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential)/i;
+const PLAN_ARG_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
 const MAX_PLAN_ARGS_PREVIEW_CHARS = 8_000;
 
 function formatPlanText(value: string | undefined): string {

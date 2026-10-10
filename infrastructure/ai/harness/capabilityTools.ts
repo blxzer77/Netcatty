@@ -100,15 +100,36 @@ async function invokeCapabilityRpc(
   rpcMethod: string,
   params: Record<string, unknown>,
   chatSessionId?: string,
+  abortSignal?: AbortSignal,
 ): Promise<unknown> {
   if (!bridge.aiCapability) {
     return { error: 'Capability bridge is unavailable in this environment.' };
   }
-  const result = await bridge.aiCapability(rpcMethod, params, chatSessionId);
-  if (result && typeof result === 'object' && 'ok' in result && (result as { ok: boolean }).ok === false) {
-    return { error: (result as { error?: string }).error || 'Capability call failed.' };
+  if (abortSignal?.aborted) return { error: 'Capability call cancelled before it could start.' };
+
+  let cancel: (() => void) | undefined;
+  const cancellation = abortSignal
+    ? new Promise<unknown>(resolve => {
+        cancel = () => {
+          // The main process owns the active SFTP/tunnel/RPC operation. Marking
+          // the chat cancelled reuses its central cancellation fan-out rather
+          // than pretending that renderer Promise.race alone stopped the write.
+          if (chatSessionId) void bridge.aiSetChatSessionCancelled?.(chatSessionId, true);
+          resolve({ error: 'Capability call cancelled with the owning turn.' });
+        };
+        abortSignal.addEventListener('abort', cancel, { once: true });
+      })
+    : null;
+  try {
+    const request = bridge.aiCapability(rpcMethod, params, chatSessionId);
+    const result = await (cancellation ? Promise.race([request, cancellation]) : request);
+    if (result && typeof result === 'object' && 'ok' in result && (result as { ok: boolean }).ok === false) {
+      return { error: (result as { error?: string }).error || 'Capability call failed.' };
+    }
+    return result;
+  } finally {
+    if (cancel) abortSignal?.removeEventListener('abort', cancel);
   }
-  return result;
 }
 
 async function tryFetchHostEnvironment(
@@ -305,7 +326,7 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
     if (!step.toolName || !step.args) return true;
     const args = step.args;
     const toolName = step.toolName;
-    const hasTarget = ['sessionId', 'sessionIds', 'hostId', 'ruleId', 'jobId']
+    const hasTarget = ['sessionId', 'sessionIds', 'hostId']
       .some(key => Object.prototype.hasOwnProperty.call(args, key));
     if (!hasTarget) return true;
     if (['terminal_execute', 'terminal_start', 'terminal_batch', 'compare_machines'].includes(toolName)) {
@@ -448,6 +469,7 @@ function runbookPlanMismatch(steps: PlanStep[], runbook: Runbook): string | null
 async function prepareMachineNotesWrite(
   deps: ToolDeps,
   args: Record<string, unknown>,
+  abortSignal?: AbortSignal,
 ): Promise<Record<string, unknown> | { error: string }> {
   const hostId = typeof args.hostId === 'string' ? args.hostId : '';
   const notes = typeof args.notes === 'string' ? args.notes : '';
@@ -459,6 +481,7 @@ async function prepareMachineNotesWrite(
     'vault/host/notes/get',
     { hostId },
     deps.chatSessionId,
+    abortSignal,
   );
   if (current && typeof current === 'object' && 'error' in current) {
     return { error: `Unable to read existing host notes before merging: ${String((current as { error: unknown }).error)}` };
@@ -493,6 +516,10 @@ function validatePlanTargets(steps: readonly PlanStep[], context: ExecutorContex
     const args = step.args;
     const declaredHostId = typeof args?.hostId === 'string' ? args.hostId : undefined;
     if (!declaredHostId) continue;
+    const hostSessions = context.sessions.filter(entry => entry.connected && entry.hostId === declaredHostId);
+    if (hostSessions.length === 0) {
+      return `Plan target host "${declaredHostId}" is not connected in the current scope.`;
+    }
     const stepSessionIds = [
       ...(step.sessionId ? [step.sessionId] : []),
       ...(step.sessionIds ?? []),
@@ -903,8 +930,15 @@ function resolveHostWriteQueueKey(
   sessionId: string,
 ): string {
   const resolved = typeof context === 'function' ? context() : context;
-  const hostId = resolved.sessions.find(session => session.sessionId === sessionId)?.hostId;
-  return hostWriteQueueKey(hostId ? `id:${hostId}` : `session:${sessionId}`);
+  const session = resolved.sessions.find(entry => entry.sessionId === sessionId);
+  if (session?.hostId) return hostWriteQueueKey(`id:${session.hostId}`);
+  if (session?.hostname) {
+    const protocol = session.protocol?.toLowerCase() || 'unknown';
+    return hostWriteQueueKey(`name:${session.hostname.trim().toLowerCase()}:${protocol}`);
+  }
+  // Without a canonical host identity, serialize conservatively by session
+  // rather than pretending unrelated sessions are the same machine.
+  return hostWriteQueueKey(`session:${sessionId}`);
 }
 
 function resolveSessionQueueKey(
@@ -1081,7 +1115,7 @@ function createCatalogTool(spec: CattyToolSpec) {
 
         let rpcParams = args as Record<string, unknown>;
         if (spec.capabilityId === 'vault.host.notes.set') {
-          const merged = await prepareMachineNotesWrite(deps, rpcParams);
+          const merged = await prepareMachineNotesWrite(deps, rpcParams, abortSignal);
           if ('error' in merged) return merged;
           rpcParams = merged;
         }
@@ -1090,6 +1124,7 @@ function createCatalogTool(spec: CattyToolSpec) {
           spec.rpcMethod,
           rpcParams,
           deps.chatSessionId,
+          abortSignal,
         );
         if (
           spec.capabilityId === 'terminal.start'

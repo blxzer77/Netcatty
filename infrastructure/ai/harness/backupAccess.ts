@@ -26,11 +26,32 @@ const PROXY_RISK_TOOL_NAMES = new Set([
 ]);
 
 const PROXY_RISK_PATTERN = /(?:proxy|nginx|haproxy|traefik|caddy|squid|v2ray|xray|frp|clash|envoy|iptables|nftables?|firewall|ip\s+route|route\s+(?:add|del|change)|resolv\.conf|dns|netplan|networkmanager|(?:systemctl|service|rc-service|launchctl)\s+(?:\S+\s+)?(?:start|restart|reload|stop|disable|mask|enable)|\$|`|\beval\b|\b(?:sh|bash|zsh)\s+-c|\b(?:python(?:3)?|perl|ruby|node|php|lua)\b)/i;
+const CONSERVATIVE_READ_ONLY_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|cat|head|tail|grep|rg|ps|top|ss|netstat|nginx\s+-v|systemctl\s+status(?:\s|$)|service\s+\S+\s+status(?:\s|$))(?:\s|$)/i;
+const TERMINAL_PLAN_TOOLS = new Set(['terminal_execute', 'terminal_start', 'terminal_batch']);
+const NON_PROXY_WRITE_TOOLS = new Set(['host_notes_set', 'vault_host_notes_set']);
+
+function isConservativeReadOnlyCommand(command: string): boolean {
+  const trimmed = command.trim();
+  return Boolean(trimmed)
+    && !/[\r\n;&|`$<>]/.test(trimmed)
+    && CONSERVATIVE_READ_ONLY_COMMAND.test(trimmed);
+}
 
 /** Infer proxy-path risk from the actual planned tools and payloads. */
 export function inferProxyRisk(steps: readonly PlanStep[]): boolean {
   return steps.some((step) => {
-    if (step.toolName && PROXY_RISK_TOOL_NAMES.has(step.toolName)) return true;
+    const toolName = step.toolName ?? '';
+    if (PROXY_RISK_TOOL_NAMES.has(toolName)) return true;
+    if (toolName.startsWith('sftp_') && !/^sftp_(?:read_file|list|stat|home)$/.test(toolName)) return true;
+    if (TERMINAL_PLAN_TOOLS.has(toolName)) {
+      const command = step.command ?? (typeof step.args?.command === 'string' ? step.args.command : '');
+      if (!isConservativeReadOnlyCommand(command)) return true;
+    } else if (toolName && !NON_PROXY_WRITE_TOOLS.has(toolName) && !toolName.startsWith('workspace_')) {
+      // Unknown or non-read capabilities are not safe to classify as unrelated
+      // to the access path. Require the backup gate until a tool-specific
+      // classifier exists.
+      return true;
+    }
     const payload = [
       step.command ?? '',
       step.args ? JSON.stringify(step.args) : '',
