@@ -22,6 +22,11 @@ import {
   runCommandOnSessions,
   type HostCommandOutcome,
 } from './multiHostExecution';
+import {
+  BACKUP_ACCESS_LABELS,
+  parseBackupAccessDeclarations,
+  verifyBackupAccess,
+} from './backupAccess';
 import { fitTerminalExecuteResultForModel } from './terminalCompression';
 import { fitLargeToolResultForModel } from './toolResultFitting';
 import { redactSecretsForModel } from './modelSecretRedaction';
@@ -378,10 +383,57 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         };
       }
 
+      // A plan that could cut the proxy path has to prove it left a way back.
+      // The harness verifies what it can (a second live connection, a written
+      // recovery procedure) and carries the declared checks into the plan the
+      // user reads; it never claims to have verified what it cannot.
+      const proxyRisk = args.proxyRisk === true || String(args.proxyRisk) === 'true';
+      const parsedBackupAccess = parseBackupAccessDeclarations(args.backupAccess);
+      if (parsedBackupAccess.error) return { error: parsedBackupAccess.error };
+
+      let backupAccessChecks: ReturnType<typeof verifyBackupAccess>['checks'] | undefined;
+      if (proxyRisk) {
+        if (!parsedBackupAccess.declarations) {
+          return {
+            error: 'This plan could interrupt the proxy path, so backupAccess is required: all four checks (backup-connection, alternate-route, config-backup, recovery-plan) must be declared.',
+          };
+        }
+        const scopeContext = resolveContext();
+        const targetHosts = steps
+          .map(step => step.sessionId)
+          .filter((sessionId): sessionId is string => Boolean(sessionId))
+          .map(sessionId => {
+            const session = scopeContext.sessions.find(entry => entry.sessionId === sessionId);
+            return { hostId: session?.hostId, hostname: session?.hostname ?? sessionId };
+          });
+        const verification = verifyBackupAccess({
+          declarations: parsedBackupAccess.declarations,
+          hosts: scopeContext.sessions,
+          targets: targetHosts,
+        });
+        backupAccessChecks = verification.checks;
+        if (!verification.ok) {
+          return {
+            error: `Plan blocked by backup-access checks: ${verification.blockReason}`,
+            backupAccessChecks,
+          };
+        }
+      }
+
+      const planPreconditions: PlanPreconditionResult[] = [
+        ...(preconditions ?? []),
+        ...(backupAccessChecks ?? []).map(check => ({
+          id: check.id,
+          label: BACKUP_ACCESS_LABELS[check.id],
+          ok: check.ok,
+          ...(check.detail ? { detail: check.detail } : {}),
+        })),
+      ];
+
       const decision = await proposePlan({
         goal,
         steps,
-        preconditions,
+        preconditions: planPreconditions.length > 0 ? planPreconditions : undefined,
         chatSessionId,
         // The tool call id doubles as the plan id so a retried submission joins
         // the pending decision instead of raising a second request.

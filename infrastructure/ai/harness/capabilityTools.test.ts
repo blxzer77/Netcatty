@@ -769,6 +769,119 @@ describe('capabilityTools submit_plan', () => {
     );
   });
 
+  it('blocks a proxy-risky plan whose target host has only one live connection', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = createCattyToolsFromCatalog(
+      {
+        aiExec: async () => ({ ok: true }),
+        aiCapability: async () => ({ ok: true }),
+      },
+      {
+        sessions: [
+          { sessionId: 'session-a', hostId: 'host-a', hostname: 'proxy.example', label: 'proxy', protocol: 'ssh', connected: true },
+        ],
+      },
+      [],
+      'confirm',
+      undefined,
+      'chat-plan-proxy',
+    );
+
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-proxy',
+    ).execute({
+      goal: 'reload the proxy service',
+      steps: JSON.stringify([{
+        id: 's1',
+        title: 'Reload the proxy',
+        toolName: 'terminal_execute',
+        sessionId: 'session-a',
+        command: 'systemctl reload v2ray',
+      }]),
+      proxyRisk: 'true',
+      backupAccess: JSON.stringify({
+        'backup-connection': { ok: true, detail: 'second session' },
+        'alternate-route': { ok: true, detail: 'tested' },
+        'config-backup': { ok: true, detail: 'copied' },
+        'recovery-plan': { ok: true, detail: 'restore from backup' },
+      }),
+    }) as { error: string; backupAccessChecks: Array<{ id: string; ok: boolean; verified: boolean }> };
+
+    assert.match(result.error, /backup-access checks/);
+    assert.match(result.error, /Only one live connection to proxy\.example/);
+    const check = result.backupAccessChecks.find(entry => entry.id === 'backup-connection');
+    assert.equal(check?.ok, false);
+    assert.equal(check?.verified, true);
+  });
+
+  it('passes a proxy-risky plan when a second live connection exists', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = createCattyToolsFromCatalog(
+      {
+        aiExec: async () => ({ ok: true }),
+        aiCapability: async () => ({ ok: true }),
+      },
+      {
+        sessions: [
+          { sessionId: 'session-a', hostId: 'host-a', hostname: 'proxy.example', label: 'proxy-a', protocol: 'ssh', connected: true },
+          { sessionId: 'session-b', hostId: 'host-a', hostname: 'proxy.example', label: 'proxy-b', protocol: 'ssh', connected: true },
+        ],
+      },
+      [],
+      'confirm',
+      undefined,
+      'chat-plan-proxy-ok',
+    );
+
+    const pending = withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-proxy-ok',
+    ).execute({
+      goal: 'reload the proxy service',
+      steps: JSON.stringify([{
+        id: 's1',
+        title: 'Reload the proxy',
+        toolName: 'terminal_execute',
+        sessionId: 'session-a',
+        command: 'systemctl reload v2ray',
+      }]),
+      proxyRisk: 'true',
+      backupAccess: JSON.stringify({
+        'backup-connection': { ok: true, detail: 'session-b is live' },
+        'alternate-route': { ok: true, detail: '203.0.113.9:22 reachable' },
+        'config-backup': { ok: true, detail: 'copied to /root/cfg.bak' },
+        'recovery-plan': { ok: true, detail: 'restore /root/cfg.bak then reload' },
+      }),
+    }) as Promise<Record<string, unknown>>;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    resolvePlan('plan-proxy-ok', { outcome: 'approved' });
+    const result = await pending;
+
+    assert.equal(result.approved, true);
+    // The checks travel with the plan the card renders; the gating itself is
+    // covered in backupAccess.test.ts.
+    assert.equal(result.planId, 'plan-proxy-ok');
+  });
+
+  it('requires backupAccess when the plan declares proxy risk', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-proxy-missing');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-proxy-missing',
+    ).execute({
+      goal: 'reload the proxy service',
+      steps: JSON.stringify([{ id: 's1', title: 'Reload', toolName: 'terminal_execute', sessionId: 'session-a', command: 'systemctl reload v2ray' }]),
+      proxyRisk: 'true',
+    }) as { error: string };
+
+    assert.match(result.error, /backupAccess is required/);
+  });
+
   it('rejects a steps payload that is not a JSON array of steps', async () => {
     resetPlanGateForTests();
     const { tools, toolsContext } = planTools('confirm', 'chat-plan-bad-json');

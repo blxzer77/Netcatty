@@ -151,4 +151,5 @@ green; the plan document is the only thing that tracks the whole arc.
 - [x] Phase 2 工具面收敛
 - [x] Phase 3 跨机协调与写锁
 - [x] Phase 4 机器档案
-- [ ] Phase 5 巡检 skill/runbook、后备通道预检、收尾
+- [x] Phase 5 后备通道预检 + runbook 层
+- [ ] Phase 5 收尾（分支合并/PR 前跑 pre-push checks；note 在合入 catty-main 后转 implemented）

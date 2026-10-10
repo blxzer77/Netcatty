@@ -43,15 +43,21 @@ test('system prompt requires the proxy-path preconditions before anything that c
     permissionMode: 'confirm',
   });
 
+  // The four checks are named by the ids the tool expects.
   for (const check of [
-    /second live connection to the same host still exists/,
-    /alternate route to that host was actually tested and reachable/,
-    /current configuration was backed up/,
-    /recovery procedure is written down/,
+    /backup-connection/,
+    /alternate-route/,
+    /config-backup/,
+    /recovery-plan/,
   ]) {
     assert.match(prompt, check);
   }
-  assert.match(prompt, /do not submit the plan/);
+  assert.match(prompt, /proxyRisk/);
+  assert.match(prompt, /backupAccess/);
+  // The prompt must not overclaim what the harness verifies.
+  assert.match(prompt, /It cannot verify/);
+  assert.match(prompt, /never mark those true unless you actually did them/);
+  assert.match(prompt, /do not submit the plan/i);
 });
 
 test('system prompt does not tell Catty to call host_open', () => {
@@ -139,6 +145,21 @@ test('the host list carries the bounded machine record, not the notes', () => {
   assert.match(prompt, /record: reverse proxy \| reloaded nginx \| watch: cert expires 2026-11-02/);
   // A host without a record is described without one.
   assert.doesNotMatch(prompt, /db-1\.example.*record:/s);
+});
+
+test('system prompt tells the agent how to run a selected runbook', () => {
+  const prompt = buildSystemPrompt({
+    scopeType: 'terminal',
+    hosts: [],
+    permissionMode: 'confirm',
+    userSkillsContext: '# Runbook: rotate the proxy certificate\n> renew it\ntargets: proxy hosts\n\n## Steps\n1. Dry run\n   - command: certbot certificates --dry-run\n   - verify: success',
+  });
+
+  assert.match(prompt, /Runbooks\./);
+  assert.match(prompt, /# Runbook: <name>/);
+  assert.match(prompt, /Do not add steps it does not contain/);
+  assert.match(prompt, /do not rewrite a command it spelled out/);
+  assert.match(prompt, /say so and ask/);
 });
 
 test('untrusted session metadata cannot become the last instruction in the prompt', () => {

@@ -409,7 +409,19 @@ const TOOL_INPUT_FIELDS = Object.freeze({
       type: "string",
       optional: true,
       description:
-        "JSON array of prerequisite checks the plan depends on, in the form [{id, label, ok, detail?}]. Every precondition must be ok=true; a false precondition blocks the plan. Use it for backup-access checks before anything that could break the proxy path: a second live connection to the host exists, an alternate route was actually tested, the current configuration was backed up, and the recovery procedure is written down.",
+        "JSON array of prerequisite checks the plan depends on, in the form [{id, label, ok, detail?}]. Every precondition must be ok=true; a false precondition blocks the plan.",
+    },
+    proxyRisk: {
+      type: "string",
+      optional: true,
+      description:
+        "Set to true when this plan could interrupt the proxy path (proxy service, firewall, routes, DNS, port forwards). The plan is then blocked unless backupAccess passes.",
+    },
+    backupAccess: {
+      type: "string",
+      optional: true,
+      description:
+        "Required when proxyRisk is true. JSON object keyed by check id: backup-connection, alternate-route, config-backup, recovery-plan. Each value is {ok, detail}. The harness verifies backup-connection from the live sessions and requires recovery-plan to name the procedure; alternate-route and config-backup are actions you must actually have run and report honestly in detail.",
     },
   },
   "harness.terminal.batch": {

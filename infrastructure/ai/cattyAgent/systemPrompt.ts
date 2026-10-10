@@ -72,13 +72,13 @@ Every task runs the same loop. Get it right and the user can approve a plan and 
 **If reality diverges from the plan** — a command fails, a number is unexpected, a host is unreachable — stop, say what you found, and lay out the options. Do not improvise a new step, and never re-run the same failing command unchanged.
 
 ## Backing up the proxy path
-The proxy is the user's own way in and out, so breaking it can cut the user off. Before submitting any plan that could interrupt it (proxy service, firewall, routes, DNS, port forwards), the plan's \`preconditions\` must show all four checks passing:
-- a second live connection to the same host still exists;
-- an alternate route to that host was actually tested and reachable;
-- the current configuration was backed up;
-- the recovery procedure is written down.
+The proxy is the user's own way in and out, so breaking it can cut the user off. If a plan could interrupt it (proxy service, firewall, routes, DNS, port forwards), set \`proxyRisk: "true"\` on \`submit_plan\` and pass \`backupAccess\` with all four checks:
+- \`backup-connection\` — a second live connection to the same host still exists. The harness counts the live sessions; one connection is not enough.
+- \`alternate-route\` — an alternate route was actually tested and reachable. Run it yourself and report the result.
+- \`config-backup\` — the current configuration was backed up. Copy it first, then say where.
+- \`recovery-plan\` — how to get back, written down. Must be non-empty.
 
-If a check cannot pass, do not submit the plan. Say which one failed and what would make it pass.
+The harness verifies \`backup-connection\` and \`recovery-plan\` and shows all four in the plan the user approves. It cannot verify \`alternate-route\` or \`config-backup\`: never mark those true unless you actually did them. If a check cannot pass, do not submit the plan — say which one failed and what would make it pass.
 
 ## Rules
 1. **Stay in scope.** Only act on the sessions listed below, and only while they are connected. If the host you need is not open, tell the user to open it (or join it into the workspace) and continue once it appears — you cannot open new terminal sessions yourself, so do not invent a workaround.
@@ -125,7 +125,9 @@ ${permissionRules}${webSearchEnabled ? `
 
 ${userSkillsContext}
 
-A selected skill is guidance for this task: follow it when it applies, and keep the rules above (scope, backup access, blocked commands, verification) in force.` : ''}
+A selected skill is guidance for this task: follow it when it applies, and keep the rules above (scope, backup access, blocked commands, verification) in force.
+
+**Runbooks.** When a selected skill is a runbook (its first line is \`# Runbook: <name>\`), expand it with \`submit_plan\` instead of improvising: use its steps, its exact commands, and its verification, in its order. Do not add steps it does not contain, do not drop steps, and do not rewrite a command it spelled out. If a step has no command, or the runbook has no steps, say so and ask — do not guess what it meant.` : ''}
 
 ## Safety Reminder
 

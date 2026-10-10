@@ -86,9 +86,12 @@ divergence stops the run and asks. Keep per-call approval as the fallback for ad
 single commands, and keep Observer strictly read-only.
 
 **4. Backup-access precondition.** A required preflight before any action that can break
-the proxy path: verify a second live connection to the target host, test an alternate
-route for reachability, back up the affected configuration, and include the recovery
-procedure in the plan. The plan must show the result of each check.
+the proxy path: a second live connection to the target host, an alternate route actually
+tested, the current configuration backed up, and the recovery procedure written down.
+The plan declares all four through `proxyRisk` and `backupAccess`; the harness verifies
+what it can itself (it counts the live sessions for the second connection and requires a
+non-empty recovery procedure), carries all four into the plan the user approves, and never
+claims to have verified the two that are acts rather than facts. See `backupAccess.ts`.
 
 **5. Coordination.** Writes to the same host serialize **per host**, not per chat session:
 two panels driving one machine must not interleave. Multi-host runs reuse the exact
@@ -102,7 +105,14 @@ written by the agent and editable by the user; secrets are redacted before anyth
 reaches the model. The agent owns one marked block inside the notes and touches nothing
 outside it, so the user's prose survives every write and unknown keys are carried over.
 The system prompt carries only a one-line summary per host — never the notes themselves.
-See `infrastructure/ai/harness/machineRecord.ts`.
+See `machineRecord.ts`.
+
+**7. Skill and runbook layers.** Skills stay the guidance layer the user selects. A runbook
+is the executable half: `# Runbook: <name>` with a `## Steps` section whose numbered steps
+carry `command` and `verify`. The agent expands a runbook into a plan through
+`runbookStepsToPlanSteps`, so the plan the user approves is the procedure the user wrote
+rather than one the model invented while reading it. Validation reports what a runbook is
+missing instead of repairing it. See `runbook.ts`.
 
 ## Alternatives considered
 
@@ -136,7 +146,8 @@ and does not want to operate the machine by hand.
 - A plan can be approved once and then executed; execution stops on divergence and asks;
   Observer mode still denies every write; every action is recorded in the trace.
 - The backup-access precondition runs before proxy-affecting actions, is visible in the
-  plan, and blocks the action when it fails.
+  plan, and blocks the action when a check fails; the two checks the harness cannot verify
+  are reported as unverified rather than assumed.
 - Writes to the same host serialize across chat sessions; a batched run reports per-host
   results and survives single-host failures; a comparison returns a deterministic
   agree/differ conclusion with the differing lines, not N full outputs.
