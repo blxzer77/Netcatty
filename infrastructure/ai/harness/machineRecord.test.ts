@@ -112,6 +112,18 @@ test('summary names the role, the last action and the watch list', () => {
   assert.equal(summarizeMachineRecord({}), null);
 });
 
+test('summary redacts secrets and stays bounded to one line', () => {
+  const summary = summarizeMachineRecord({
+    role: 'API_TOKEN=tok_live_1234567890',
+    updated: '2026-10-10T00:00:00Z',
+    'last-action': 'x'.repeat(2_000),
+  });
+  assert.ok(summary);
+  assert.doesNotMatch(summary, /tok_live_1234567890/);
+  assert.ok(summary.length <= 1_001);
+  assert.doesNotMatch(summary, /[\\r\\n]/);
+});
+
 describe('collectMachineRecordSummaries', () => {
   it('summarizes one bounded line per host and skips hosts it cannot read', async () => {
     const notesByHost: Record<string, string> = {

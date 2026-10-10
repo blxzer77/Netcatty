@@ -52,10 +52,9 @@ export function buildCattyToolApproval(input: {
       return undefined;
     }
 
-    // An approved plan is the unit of consent for the steps it names. A tool
-    // call that matches one of those steps (same tool, same target session)
-    // must not ask again; anything the plan did not name still goes through
-    // the per-call gate.
+    // An approved plan is the unit of consent for the exact steps it names. A
+    // tool call must match the same tool, target session(s), and structured
+    // arguments; anything the plan did not name still goes through the gate.
     if (isToolCoveredByApprovedPlan(chatSessionId, toolCall.toolName, args)) {
       return undefined;
     }

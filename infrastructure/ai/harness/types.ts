@@ -121,6 +121,10 @@ export interface PlanStep {
   toolName?: string;
   /** Target session when the tool operates on a host. */
   sessionId?: string;
+  /** Target sessions for multi-host tools. */
+  sessionIds?: string[];
+  /** Exact structured tool arguments, required for non-terminal actions. */
+  args?: Record<string, unknown>;
   /** The exact command or payload the step intends to run. */
   command?: string;
   reason?: string;
@@ -133,6 +137,8 @@ export interface PlanPreconditionResult {
   id: string;
   label: string;
   ok: boolean;
+  /** Whether the harness itself established the check. */
+  verified?: boolean;
   detail?: string;
 }
 

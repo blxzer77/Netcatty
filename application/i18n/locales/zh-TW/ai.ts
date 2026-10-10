@@ -349,6 +349,7 @@ export const zhTWAiMessages: Messages = {
   'ai.plan.risk.low': '低風險',
   'ai.plan.risk.high': '高風險',
   'ai.plan.preconditionBlocked': '有前置檢查未通過，該計劃無法按現狀執行。',
+  'ai.plan.unverified': '未驗證',
   'ai.plan.approve': '核准並執行',
   'ai.plan.reject': '拒絕',
   'ai.externalMcp.title': '對外 MCP',

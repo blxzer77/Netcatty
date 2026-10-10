@@ -129,20 +129,38 @@ describe('runCommandOnSessions', () => {
     assert.deepEqual(events, ['reserve:a', 'run:a']);
   });
 
+  it('does not start later hosts after cancellation', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const result = await runCommandOnSessions({
+      sessionIds: ['a', 'b'],
+      command: 'systemctl reload nginx',
+      signal: controller.signal,
+      runOnHost: async (sessionId) => {
+        calls.push(sessionId);
+        controller.abort();
+        return outcome(sessionId);
+      },
+    });
+
+    assert.deepEqual(calls, ['a']);
+    assert.equal(result.hosts[1]?.ok, false);
+    assert.match(result.hosts[1]?.error ?? '', /cancelled/i);
+  });
+
   it('releases slots even when a host throws', async () => {
     const reserved: string[] = [];
-    await assert.rejects(
-      runCommandOnSessions({
-        sessionIds: ['a'],
-        command: 'uptime',
-        reserveSlot: (sessionId) => {
-          reserved.push(sessionId);
-          return { ready: Promise.resolve(), release: () => reserved.push(`release:${sessionId}`) };
-        },
-        runOnHost: async () => { throw new Error('bridge exploded'); },
-      }),
-      /bridge exploded/,
-    );
+    const result = await runCommandOnSessions({
+      sessionIds: ['a'],
+      command: 'uptime',
+      reserveSlot: (sessionId) => {
+        reserved.push(sessionId);
+        return { ready: Promise.resolve(), release: () => reserved.push(`release:${sessionId}`) };
+      },
+      runOnHost: async () => { throw new Error('bridge exploded'); },
+    });
+    assert.equal(result.hosts[0]?.ok, false);
+    assert.match(result.hosts[0]?.error ?? '', /bridge exploded/);
     assert.deepEqual(reserved, ['a', 'release:a']);
   });
 });
@@ -213,6 +231,6 @@ describe('compareHostOutputs', () => {
 
 describe('hostWriteQueueKey', () => {
   it('is scoped to the host, not the chat session', () => {
-    assert.equal(hostWriteQueueKey('session-1'), 'session:session-1');
+    assert.equal(hostWriteQueueKey('session-1'), 'host:session-1');
   });
 });

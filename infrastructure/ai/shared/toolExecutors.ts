@@ -66,9 +66,11 @@ function isObserver(mode: AIPermissionMode): boolean {
 export async function executeTerminalExecute(
   deps: ToolDeps,
   args: { sessionId: string; command: string },
+  options: { abortSignal?: AbortSignal } = {},
 ): Promise<ToolExecResult<{ stdout: string; stderr: string; exitCode: number | null }>> {
   const { bridge, context, commandBlocklist, permissionMode } = deps;
   const { sessionId, command } = args;
+  const { abortSignal } = options;
 
   if (!sessionId || !command) {
     return { ok: false, error: 'Missing sessionId or command' };
@@ -98,7 +100,20 @@ export async function executeTerminalExecute(
     }
   }
 
-  const result = await bridge.aiExec(sessionId, command, deps.chatSessionId);
+  if (abortSignal?.aborted) {
+    return { ok: false, error: 'Tool call cancelled before execution.' };
+  }
+
+  const cancelOnAbort = () => {
+    if (deps.chatSessionId) void deps.bridge.aiCattyCancelExec?.(deps.chatSessionId);
+  };
+  abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
+  let result: Awaited<ReturnType<NetcattyBridge['aiExec']>>;
+  try {
+    result = await bridge.aiExec(sessionId, command, deps.chatSessionId);
+  } finally {
+    abortSignal?.removeEventListener('abort', cancelOnAbort);
+  }
   // Real execution failures (timeout, disconnect, no stream) have an `error` field
   if (!result.ok && result.error) {
     return {

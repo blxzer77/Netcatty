@@ -48,6 +48,8 @@ export type PlanClearedListener = (planIds: string[]) => void;
 interface PendingPlanEntry {
   plan: ProposedPlan;
   resolve: (decision: PlanDecision) => void;
+  /** Re-checks safety-critical preconditions immediately before approval. */
+  validateApproval?: () => PlanDecision | void;
   /** Clears the idle auto-deny timer without resolving the plan. */
   cancelTimeout?: () => void;
   /** Drops the idle timer because the plan already settled. */
@@ -57,6 +59,8 @@ interface PendingPlanEntry {
 interface ApprovedPlanScope {
   planId: string;
   steps: PlanStep[];
+  /** The next non-read step that may be claimed by a write tool call. */
+  nextStepIndex: number;
 }
 
 const pendingPlans = new Map<string, PendingPlanEntry>();
@@ -100,6 +104,8 @@ export interface ProposePlanInput {
   /** Explicit plan id; generated when omitted. */
   planId?: string;
   timeoutMs?: number;
+  /** Optional last-moment safety validation before the user approval is granted. */
+  validateApproval?: () => PlanDecision | void;
 }
 
 /**
@@ -182,6 +188,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
     pendingPlans.set(planId, {
       plan,
       resolve: settle,
+      validateApproval: input.validateApproval,
       cancelTimeout: () => {
         const remainingHard = hardDeadlineAt - Date.now();
         if (remainingHard <= 0) {
@@ -229,15 +236,16 @@ export function cancelPlanTimeout(planId: string): void {
  * Record the user's decision for a pending plan.
  *
  * Approved plans register their steps as a narrow scope: tool calls that match an
- * approved step (same tool, same target session) no longer ask for per-tool
- * approval inside that chat session. Everything outside the scope still asks.
+ * approved step (same tool, target session(s), and exact args) no longer asks
+ * for per-tool approval inside that chat session. Everything outside the scope
+ * still asks.
  */
 export function resolvePlan(planId: string, decision: boolean | PlanDecision): void {
   const outcome: PlanOutcome = typeof decision === 'boolean'
     ? (decision ? 'approved' : 'denied')
     : decision.outcome;
   const note = typeof decision === 'boolean' ? undefined : decision.note;
-  const normalized: PlanDecision = { outcome, ...(note ? { note } : {}) };
+  let normalized: PlanDecision = { outcome, ...(note ? { note } : {}) };
 
   const entry = pendingPlans.get(planId);
   if (!entry) {
@@ -245,6 +253,18 @@ export function resolvePlan(planId: string, decision: boolean | PlanDecision): v
     // second resolution.
     return;
   }
+  if (normalized.outcome === 'approved' && entry.validateApproval) {
+    try {
+      const validation = entry.validateApproval();
+      if (validation) normalized = validation;
+    } catch (error) {
+      normalized = {
+        outcome: 'denied',
+        note: `Plan safety validation failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   pendingPlans.delete(planId);
   entry.dispose?.();
   entry.resolve(normalized);
@@ -272,17 +292,17 @@ function registerApprovedPlan(plan: ProposedPlan): void {
   const chatSessionId = plan.chatSessionId;
   if (!chatSessionId) return;
   const scopes = approvedPlansByChatSession.get(chatSessionId) ?? [];
-  scopes.push({ planId: plan.planId, steps: plan.steps });
+  scopes.push({ planId: plan.planId, steps: plan.steps, nextStepIndex: 0 });
   approvedPlansByChatSession.set(chatSessionId, scopes);
 }
 
 /**
  * True when a tool call is covered by an approved plan in this chat session.
  *
- * A step covers a call when it names the same tool and either names no target
- * session or names the same one. Multi-host tools (`terminal_batch`,
- * `compare_machines`) carry `sessionIds` instead of `sessionId`, so a step
- * naming one of the listed hosts still counts as covered.
+ * A step covers a call when it names the same tool and its exact structured
+ * args match. Write steps should therefore name their target session(s).
+ * Multi-host tools (`terminal_batch`, `compare_machines`) carry `sessionIds`
+ * instead of `sessionId`, so the full target list is part of approval.
  */
 export function isToolCoveredByApprovedPlan(
   chatSessionId: string | undefined,
@@ -292,15 +312,85 @@ export function isToolCoveredByApprovedPlan(
   if (!chatSessionId) return false;
   const scopes = approvedPlansByChatSession.get(chatSessionId);
   if (!scopes?.length) return false;
-  const sessionId = typeof args.sessionId === 'string' ? args.sessionId : undefined;
-  const sessionIds = Array.isArray(args.sessionIds)
-    ? args.sessionIds.filter((entry): entry is string => typeof entry === 'string')
+  const comparableArgs = normalizePlanArgs(toolName, args);
+  const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
+  const sessionIds = Array.isArray(comparableArgs.sessionIds)
+    ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
     : [];
-  return scopes.some(scope => scope.steps.some(step => {
-    if (step.toolName !== toolName) return false;
-    if (!step.sessionId) return true;
-    return step.sessionId === sessionId || sessionIds.includes(step.sessionId);
-  }));
+
+  for (const scope of scopes) {
+    // Read-only steps are not routed through toolApproval. Let a later write
+    // step become claimable when the model has already performed its read.
+    while (
+      scope.nextStepIndex < scope.steps.length
+      && scope.steps[scope.nextStepIndex]?.risk === 'read'
+    ) {
+      scope.nextStepIndex += 1;
+    }
+
+    const step = scope.steps[scope.nextStepIndex];
+    if (!step || step.toolName !== toolName) continue;
+    if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) {
+      continue;
+    }
+
+    const expectedArgs = expectedPlanArgs(step);
+    // A plan without an exact payload must never widen into blanket consent.
+    if (!expectedArgs || !samePlanArgs(
+      normalizePlanArgs(toolName, expectedArgs),
+      comparableArgs,
+    )) continue;
+
+    scope.nextStepIndex += 1;
+    return true;
+  }
+  return false;
+}
+
+function expectedPlanArgs(step: PlanStep): Record<string, unknown> | undefined {
+  if (step.args && typeof step.args === 'object' && !Array.isArray(step.args)) {
+    return step.args;
+  }
+
+  const expected: Record<string, unknown> = {};
+  if (step.sessionId) expected.sessionId = step.sessionId;
+  if (step.sessionIds) expected.sessionIds = step.sessionIds;
+  if (
+    step.command
+    && (step.toolName === 'terminal_execute'
+      || step.toolName === 'terminal_start'
+      || step.toolName === 'terminal_batch'
+      || step.toolName === 'compare_machines')
+  ) {
+    expected.command = step.command;
+  }
+  return Object.keys(expected).length > 0 ? expected : undefined;
+}
+
+function samePlanArgs(expected: Record<string, unknown>, actual: Record<string, unknown>): boolean {
+  return canonicalPlanValue(expected) === canonicalPlanValue(actual);
+}
+
+function normalizePlanArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (toolName !== 'terminal_batch' && toolName !== 'compare_machines') return args;
+  if (typeof args.sessionIds !== 'string') return args;
+  try {
+    const parsed = JSON.parse(args.sessionIds) as unknown;
+    return Array.isArray(parsed) ? { ...args, sessionIds: parsed } : args;
+  } catch {
+    return args;
+  }
+}
+
+function canonicalPlanValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalPlanValue).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map(key => `${JSON.stringify(key)}:${canonicalPlanValue((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
 }
 
 /** Drop plan scope grants for a chat session (called when its turn ends). */
@@ -321,7 +411,18 @@ export function clearChatSessionPlans(chatSessionId: string | undefined): void {
     dropped.push(planId);
     pendingPlans.delete(planId);
     entry.dispose?.();
-    entry.resolve({ outcome: 'denied', note: 'Chat session was stopped.' });
+    const decision = { outcome: 'denied' as const, note: 'Chat session was stopped.' };
+    entry.resolve(decision);
+    trace(entry.plan, {
+      id: nextPlanEventId('plan-resolved'),
+      type: 'plan_resolved',
+      planId,
+      outcome: decision.outcome,
+      note: decision.note,
+    });
+    for (const listener of resolvedListeners) {
+      try { listener(planId, decision); } catch { /* ignore listener errors */ }
+    }
   }
   approvedPlansByChatSession.delete(chatSessionId);
   if (dropped.length > 0) {

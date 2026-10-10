@@ -33,6 +33,7 @@ import { computeTotalInputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../contextBu
 import { clearChatSessionCancelled } from '../agentStop';
 import { clearApprovedPlans } from '../../shared/planGate';
 import { collectMachineRecordSummaries } from '../machineRecord';
+import { parseRunbook } from '../runbook';
 import { isRequestTooLargeError } from '../../errorClassifier';
 import { getNetcattyBridge, generateId, resolveUserSkillsContext } from '../../aiChatStreamingSupport';
 import {
@@ -154,6 +155,7 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     trimmed,
     context.selectedUserSkillSlugs,
   );
+  const selectedRunbook = parseRunbook(userSkillsContext);
   const modelUserText = fitLargeUserInputForModel(trimmed, sessionId, ctx.toolOutputStore);
   const getExecutorContext = context.getExecutorContext ?? (() => ({
     sessions: context.terminalSessions,
@@ -169,6 +171,7 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     sessionId,
     ctx.toolOutputStore,
     ctx.toolResultDedup,
+    selectedRunbook ?? undefined,
   );
   const { tools } = toolsBundle;
 

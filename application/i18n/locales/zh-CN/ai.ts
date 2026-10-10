@@ -359,6 +359,7 @@ export const zhCNAiMessages: Messages = {
   'ai.plan.risk.low': '低风险',
   'ai.plan.risk.high': '高风险',
   'ai.plan.preconditionBlocked': '有前置检查未通过，该计划无法按现状执行。',
+  'ai.plan.unverified': '未验证',
   'ai.plan.approve': '批准并执行',
   'ai.plan.reject': '拒绝',
   'ai.externalMcp.title': '对外 MCP',

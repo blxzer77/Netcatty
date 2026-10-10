@@ -7,6 +7,7 @@ import type { ToolResultDedup } from './toolResultDedup';
 import type { CompactionTrace } from './types';
 import type { AgentKind } from '../agentKinds';
 import type { PromptContextSnapshot } from './promptContextSnapshot';
+import type { Runbook } from './runbook';
 
 export const cattyRuntimeContextSchema = z.object({
   chatSessionId: z.string(),
@@ -34,6 +35,7 @@ export const cattyToolContextSchema = z.object({
   getExecutorContext: z.custom<() => ExecutorContext>(),
   toolOutputStore: z.custom<ToolOutputStore>().optional(),
   toolResultDedup: z.custom<ToolResultDedup>().optional(),
+  selectedRunbook: z.custom<Runbook>().optional(),
 });
 
 export type CattyToolContext = z.infer<typeof cattyToolContextSchema>;

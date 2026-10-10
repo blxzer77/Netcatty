@@ -123,8 +123,8 @@ export async function chainBySessionKey<T>(key: string, task: () => Promise<T>):
  * must not interleave their writes. The main-process session mutex stays as
  * defense-in-depth for paths that do not come through this queue.
  */
-export function hostWriteQueueKey(sessionId: string): string {
-  return `session:${sessionId}`;
+export function hostWriteQueueKey(hostId: string): string {
+  return `host:${hostId}`;
 }
 
 /** Test-only: inspect the live queue. */

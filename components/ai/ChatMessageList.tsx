@@ -318,9 +318,11 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   }, [pendingApprovals]);
 
   const settlePlan = useCallback((planId: string, outcome: 'approved' | 'denied') => {
+    const plan = pendingPlans.get(planId);
+    if (plan?.chatSessionId && activeSessionId && plan.chatSessionId !== activeSessionId) return;
     resolvePlan(planId, { outcome });
     setPendingPlans(prev => { const m = new Map(prev); m.delete(planId); return m; });
-  }, []);
+  }, [activeSessionId, pendingPlans]);
 
   const handleCodexUserInput = useCallback((
     interactionId: string,
@@ -866,6 +868,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
 
         {/* A plan the agent is waiting on: approve once, then execute. */}
         {!hideToolCalls && Array.from(pendingPlans.entries())
+          .filter(([, plan]) => !activeSessionId || !plan.chatSessionId || plan.chatSessionId === activeSessionId)
           .map(([planId, plan]) => (
             <React.Profiler key={planId} {...getAIPanelProfilerProps('AIChatPanel.Plan.Approval')}>
               <div>

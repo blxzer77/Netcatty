@@ -114,7 +114,13 @@ describe('buildCattyToolApproval with an approved plan', () => {
 
   it('skips the per-call prompt for a tool call the approved plan named', async () => {
     await approvePlan('plan-call-6', [
-      { id: 's1', title: 'write file', toolName: 'sftp_write_file', sessionId: 'session-a' },
+      {
+        id: 's1',
+        title: 'write file',
+        toolName: 'sftp_write_file',
+        sessionId: 'session-a',
+        args: { sessionId: 'session-a', path: '/tmp/x', content: 'hi' },
+      },
     ]);
     let asked = false;
     const approval = buildCattyToolApproval({
@@ -136,7 +142,13 @@ describe('buildCattyToolApproval with an approved plan', () => {
 
   it('still asks for a call the plan did not name', async () => {
     await approvePlan('plan-call-7', [
-      { id: 's1', title: 'write file', toolName: 'sftp_write_file', sessionId: 'session-a' },
+      {
+        id: 's1',
+        title: 'write file',
+        toolName: 'sftp_write_file',
+        sessionId: 'session-a',
+        args: { sessionId: 'session-a', path: '/tmp/x', content: 'hi' },
+      },
     ]);
     let asked = false;
     const approval = buildCattyToolApproval({

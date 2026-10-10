@@ -350,6 +350,7 @@ export const esAiMessages: Messages = {
   'ai.plan.risk.low': 'riesgo bajo',
   'ai.plan.risk.high': 'riesgo alto',
   'ai.plan.preconditionBlocked': 'Una o mas comprobaciones previas no pasaron, asi que el plan no puede ejecutarse tal como esta.',
+  'ai.plan.unverified': 'sin verificar',
   'ai.plan.approve': 'Aprobar y ejecutar',
   'ai.plan.reject': 'Rechazar',
   'ai.externalMcp.title': 'MCP externo',

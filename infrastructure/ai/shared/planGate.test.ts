@@ -17,11 +17,12 @@ import {
 import type { AgentEvent } from '../harness/types';
 import { globalTraceStore } from '../harness/traceStore';
 
-const step = (overrides: Partial<{ id: string; title: string; toolName?: string; sessionId?: string }> = {}) => ({
+const step = (overrides: Partial<{ id: string; title: string; toolName?: string; sessionId?: string; command?: string; args?: Record<string, unknown> }> = {}) => ({
   id: 's1',
   title: 'install nginx',
   toolName: 'terminal_execute',
   sessionId: 'sess-a',
+  command: 'systemctl reload nginx',
   ...overrides,
 });
 
@@ -165,7 +166,7 @@ describe('planGate', () => {
   });
 
   describe('approved plan scope', () => {
-    it('covers only the tool and session an approved step named', async () => {
+    it('covers only the exact command and session an approved step named', async () => {
       const pending = proposePlan({
         goal: 'install nginx',
         steps: [step({ toolName: 'terminal_execute', sessionId: 'sess-a' })],
@@ -175,21 +176,22 @@ describe('planGate', () => {
       resolvePlan('plan-9', { outcome: 'approved' });
       await pending;
 
-      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a' }), true);
-      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-b' }), false);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a', command: 'systemctl reload nginx' }), true);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a', command: 'rm -rf /' }), false);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-b', command: 'systemctl reload nginx' }), false);
       assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'sftp_delete', { sessionId: 'sess-a' }), false);
     });
 
-    it('covers the tool on any session when the step named no session', async () => {
+    it('does not cover a call when the approved step omitted its session', async () => {
       const pending = proposePlan({
         goal: 'read state',
-        steps: [{ id: 's1', title: 'check disk', toolName: 'terminal_execute' }],
+        steps: [{ id: 's1', title: 'check disk', toolName: 'terminal_execute', command: 'systemctl reload nginx' }],
         chatSessionId,
         planId: 'plan-10',
       });
       resolvePlan('plan-10', { outcome: 'approved' });
       await pending;
-      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'anything' }), true);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'anything', command: 'systemctl reload nginx' }), false);
     });
 
     it('covers nothing for steps without a tool name or on other sessions', async () => {
@@ -215,9 +217,9 @@ describe('planGate', () => {
       });
       resolvePlan('plan-12', { outcome: 'approved' });
       await pending;
-      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a' }), true);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a', command: 'systemctl reload nginx' }), true);
       clearApprovedPlans(chatSessionId);
-      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a' }), false);
+      assert.equal(isToolCoveredByApprovedPlan(chatSessionId, 'terminal_execute', { sessionId: 'sess-a', command: 'systemctl reload nginx' }), false);
     });
 
     it('covers a multi-host step that names one of the target sessions', async () => {
@@ -225,7 +227,8 @@ describe('planGate', () => {
         goal: 'restart nginx on both web hosts',
         steps: [step({
           toolName: 'terminal_batch',
-          sessionId: 'sess-b',
+          sessionId: undefined,
+          args: { sessionIds: ['sess-a', 'sess-b', 'sess-c'], command: 'systemctl reload nginx' },
         })],
         chatSessionId,
         planId: 'plan-multi',
@@ -235,13 +238,13 @@ describe('planGate', () => {
 
       assert.equal(
         isToolCoveredByApprovedPlan(chatSessionId, 'terminal_batch', {
-          sessionIds: ['sess-a', 'sess-b', 'sess-c'],
+          sessionIds: JSON.stringify(['sess-a', 'sess-b', 'sess-c']),
           command: 'systemctl reload nginx',
         }),
         true,
       );
       assert.equal(
-        isToolCoveredByApprovedPlan(chatSessionId, 'terminal_batch', { sessionIds: ['sess-z'] }),
+        isToolCoveredByApprovedPlan(chatSessionId, 'terminal_batch', { sessionIds: ['sess-z'], command: 'systemctl reload nginx' }),
         false,
       );
     });

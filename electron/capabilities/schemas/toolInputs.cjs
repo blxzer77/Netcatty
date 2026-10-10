@@ -403,7 +403,7 @@ const TOOL_INPUT_FIELDS = Object.freeze({
     steps: {
       type: "string",
       description:
-        "JSON array of step objects, one per action, in execution order. Each object: id (short, stable), title (imperative), toolName (the tool the step will call), sessionId (target session when the step operates on a host), command (exact command or payload), reason (why this step is needed), verification (how the step proves it worked), risk (read|low|high).",
+        "JSON array of step objects, one per action, in execution order. Each object: id (short, stable), title (imperative), toolName (the tool the step will call), sessionId or sessionIds (target session(s)), args (exact structured tool arguments; required for non-terminal actions), command (exact terminal command), reason (why this step is needed), verification (how the step proves it worked), risk (read|low|high). Approved write steps are matched against their exact arguments.",
     },
     preconditions: {
       type: "string",

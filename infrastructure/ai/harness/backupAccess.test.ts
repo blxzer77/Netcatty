@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BACKUP_ACCESS_CHECK_IDS,
+  inferProxyRisk,
   parseBackupAccessDeclarations,
   verifyBackupAccess,
   type BackupAccessHost,
@@ -20,6 +21,17 @@ const allDeclared = {
   'config-backup': { ok: true, detail: 'nginx.conf copied to /root/nginx.conf.bak' },
   'recovery-plan': { ok: true, detail: 'restore from /root/nginx.conf.bak and systemctl reload nginx' },
 };
+
+describe('proxy-risk inference', () => {
+  it('cannot be disabled by setting proxyRisk false in the tool call', () => {
+    assert.equal(inferProxyRisk([
+      { id: 's1', title: 'Reload', toolName: 'terminal_execute', sessionId: 's-1', command: 'systemctl reload nginx' },
+    ]), true);
+    assert.equal(inferProxyRisk([
+      { id: 's1', title: 'Read', toolName: 'terminal_execute', sessionId: 's-1', command: 'uptime' },
+    ]), false);
+  });
+});
 
 describe('verifyBackupAccess', () => {
   it('passes when every check is declared and the fallback connection exists', () => {

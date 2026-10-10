@@ -40,7 +40,7 @@ describe('capabilityTools session queue keys', () => {
     );
     // The host write key ignores the chat session on purpose: two panels
     // driving the same machine must not interleave their writes.
-    assert.equal(key, 'session:session-a');
+    assert.equal(key, 'host:session:session-a');
     const otherPanel = resolveSessionQueueKeyForTests(
       {
         capabilityId: 'terminal.execute',
@@ -51,6 +51,21 @@ describe('capabilityTools session queue keys', () => {
       'chat-2',
     );
     assert.equal(otherPanel, key);
+
+    const sameHostDifferentSession = resolveSessionQueueKeyForTests(
+      {
+        capabilityId: 'terminal.execute',
+        toolName: 'terminal_execute',
+        policy: { write: true, bypassesApproval: false },
+      },
+      { sessionId: 'session-b', command: 'ls' },
+      'chat-3',
+      { sessions: [
+        { sessionId: 'session-a', hostId: 'host-1' },
+        { sessionId: 'session-b', hostId: 'host-1' },
+      ] } as never,
+    );
+    assert.equal(sameHostDifferentSession, 'host:id:host-1');
   });
 
   it('keeps reads on the same session ordered per chat session', () => {
@@ -688,7 +703,7 @@ describe('capabilityTools submit_plan', () => {
     command: 'df -h /',
     reason: 'Disk full is the suspected cause',
     verification: 'Reported use is below 90%',
-    risk: 'read',
+    risk: 'low',
   }]);
 
   it('refuses plans in observer mode', async () => {
@@ -739,7 +754,7 @@ describe('capabilityTools submit_plan', () => {
     assert.equal(result.approved, false);
     assert.equal(result.reason, 'not now');
     assert.equal(
-      isToolCoveredByApprovedPlan('chat-plan-denied', 'terminal_execute', { sessionId: 'session-a' }),
+      isToolCoveredByApprovedPlan('chat-plan-denied', 'terminal_execute', { sessionId: 'session-a', command: 'df -h /' }),
       false,
     );
   });
@@ -760,11 +775,11 @@ describe('capabilityTools submit_plan', () => {
     assert.equal(result.planId, 'plan-approved');
     assert.match(String(result.instruction), /Plan approved/);
     assert.equal(
-      isToolCoveredByApprovedPlan('chat-plan-approved', 'terminal_execute', { sessionId: 'session-a' }),
+      isToolCoveredByApprovedPlan('chat-plan-approved', 'terminal_execute', { sessionId: 'session-a', command: 'df -h /' }),
       true,
     );
     assert.equal(
-      isToolCoveredByApprovedPlan('chat-plan-approved', 'terminal_execute', { sessionId: 'session-b' }),
+      isToolCoveredByApprovedPlan('chat-plan-approved', 'terminal_execute', { sessionId: 'session-b', command: 'df -h /' }),
       false,
     );
   });
@@ -893,6 +908,40 @@ describe('capabilityTools submit_plan', () => {
 
     assert.match(result.error, /JSON array/);
   });
+  it('merges and sanitizes the machine record on host notes writes', async () => {
+    let written: Record<string, unknown> | undefined;
+    const { tools, toolsContext } = createCattyToolsFromCatalog(
+      {
+        aiCapability: async (method, params) => {
+          if (method === 'vault/host/notes/get') {
+            return { ok: true, hostId: 'host-1', notes: 'User-owned prose\nold note' };
+          }
+          written = params;
+          return { ok: true, hostId: 'host-1', notes: String(params.notes ?? '') };
+        },
+      },
+      { sessions: [] },
+      [],
+      'auto',
+      undefined,
+      'chat-notes-write',
+    );
+
+    await withCattyToolContext(
+      tools.host_notes_set,
+      toolsContext.host_notes_set,
+      'notes-write',
+    ).execute({
+      hostId: 'host-1',
+      notes: '<!-- netcatty:agent-record:start -->\nrole: web\nupdated: 2026-10-10T00:00:00Z\nlast-action: API_TOKEN=tok_live_1234567890 rotated\n<!-- netcatty:agent-record:end -->',
+    });
+
+    assert.equal(written?.hostId, 'host-1');
+    assert.match(String(written?.notes), /User-owned prose/);
+    assert.match(String(written?.notes), /role: web/);
+    assert.doesNotMatch(String(written?.notes), /tok_live_1234567890/);
+  });
+
   it('redacts secrets in host notes before they reach the model', async () => {
     const { tools, toolsContext } = createCattyToolsFromCatalog(
       {

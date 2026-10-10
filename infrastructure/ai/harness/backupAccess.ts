@@ -1,3 +1,5 @@
+import type { PlanStep } from './types';
+
 /**
  * Backup-access preconditions for work that could cut the proxy path.
  *
@@ -15,6 +17,27 @@
  * declared, carried into the plan the user reads, and reported as unverified —
  * the harness never claims to have checked something it cannot check.
  */
+
+const PROXY_RISK_TOOL_NAMES = new Set([
+  'portforward_start',
+  'portforward_stop',
+  'portforward.start',
+  'portforward.stop',
+]);
+
+const PROXY_RISK_PATTERN = /(?:proxy|nginx|haproxy|traefik|caddy|squid|v2ray|xray|frp|clash|envoy|iptables|nftables?|firewall|ip\s+route|route\s+(?:add|del|change)|resolv\.conf|dns|netplan|networkmanager|systemctl\s+(?:restart|reload|stop|disable|mask))/i;
+
+/** Infer proxy-path risk from the actual planned tools and payloads. */
+export function inferProxyRisk(steps: readonly PlanStep[]): boolean {
+  return steps.some((step) => {
+    if (step.toolName && PROXY_RISK_TOOL_NAMES.has(step.toolName)) return true;
+    const payload = [
+      step.command ?? '',
+      step.args ? JSON.stringify(step.args) : '',
+    ].join(' ');
+    return PROXY_RISK_PATTERN.test(payload);
+  });
+}
 
 export const BACKUP_ACCESS_CHECK_IDS = [
   'backup-connection',

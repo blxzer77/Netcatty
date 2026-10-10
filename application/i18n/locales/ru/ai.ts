@@ -306,6 +306,7 @@ export const ruAiMessages: Messages = {
   'ai.plan.risk.low': 'низкий риск',
   'ai.plan.risk.high': 'высокий риск',
   'ai.plan.preconditionBlocked': 'Одно или несколько предусловий не выполнены, поэтому план нельзя выполнить как есть.',
+  'ai.plan.unverified': 'не проверено',
   'ai.plan.approve': 'Одобрить и выполнить',
   'ai.plan.reject': 'Отклонить',
   'ai.externalMcp.title': 'Внешний MCP',

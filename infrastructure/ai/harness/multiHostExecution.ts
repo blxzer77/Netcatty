@@ -52,6 +52,7 @@ export interface RunCommandOnSessionsInput {
   stopOnError?: boolean;
   /** Reserve the host for this run so two panels cannot write it at once. */
   reserveSlot?: (sessionId: string) => { ready: Promise<void>; release: () => void } | null;
+  signal?: AbortSignal;
   runOnHost: (sessionId: string) => Promise<HostCommandOutcome>;
 }
 
@@ -78,7 +79,17 @@ export async function runCommandOnSessions(
     const slot = input.reserveSlot?.(sessionId) ?? null;
     try {
       await slot?.ready;
+      if (input.signal?.aborted) return cancelledOutcome(sessionId);
       return await input.runOnHost(sessionId);
+    } catch (error) {
+      return {
+        sessionId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+      };
     } finally {
       slot?.release();
     }
@@ -115,8 +126,8 @@ export interface HostOutputComparison {
   groups: Array<{ members: string[]; lineCount: number }>;
   /** Hosts whose output differs from the largest group. */
   differingHosts: string[];
-  /** Bounded per-host detail: the lines that are unique to that host. */
-  differences: Array<{ sessionId: string; lines: string[] }>;
+  /** Bounded per-group detail: the lines that are unique to that group. */
+  differences: Array<{ members: string[]; lines: string[] }>;
   conclusion: string;
   hostsThatFailed: string[];
 }
@@ -132,11 +143,11 @@ export function compareHostOutputs(
   command: string,
   hosts: readonly HostCommandOutcome[],
 ): HostOutputComparison {
-  const answered = hosts.filter(host => !host.error);
-  const hostsThatFailed = hosts.filter(host => host.error).map(host => host.sessionId);
+  const answered = hosts.filter(host => host.ok);
+  const hostsThatFailed = hosts.filter(host => !host.ok).map(host => host.sessionId);
   const byOutput = new Map<string, string[]>();
   for (const host of answered) {
-    const key = host.stdout;
+    const key = comparisonText(host);
     const members = byOutput.get(key) ?? [];
     members.push(host.sessionId);
     byOutput.set(key, members);
@@ -152,9 +163,18 @@ export function compareHostOutputs(
   const differences = groups.slice(1).map(group => {
     const members = group.members;
     const memberHost = answered.find(host => members.includes(host.sessionId));
+    const baselineHost = answered.find(host => (groups[0]?.members ?? []).includes(host.sessionId));
     const unique = memberHost
       ? splitLines(memberHost.stdout).filter(line => !baselineLines.has(line))
       : [];
+    if (unique.length === 0 && memberHost && baselineHost) {
+      if (memberHost.stderr !== baselineHost.stderr) {
+        unique.push(`[stderr] ${memberHost.stderr || '(empty)'}`);
+      }
+      if (memberHost.exitCode !== baselineHost.exitCode) {
+        unique.push(`[exitCode] ${memberHost.exitCode ?? 'null'}`);
+      }
+    }
     return {
       members,
       lines: unique.slice(0, MAX_COMPARE_LINES_PER_HOST),
@@ -213,7 +233,15 @@ function firstHostOutput(
   members: readonly string[],
 ): string {
   const host = hosts.find(entry => members.includes(entry.sessionId));
-  return host?.stdout ?? '';
+  return host ? comparisonText(host) : '';
+}
+
+function comparisonText(host: HostCommandOutcome): string {
+  return [
+    host.stdout,
+    host.stderr ? `[stderr]\n${host.stderr}` : '',
+    `[exitCode] ${host.exitCode ?? 'null'}`,
+  ].filter(Boolean).join('\n');
 }
 
 function splitLines(output: string): string[] {
@@ -237,6 +265,17 @@ function dedupe(ids: readonly string[]): string[] {
     result.push(id);
   }
   return result;
+}
+
+function cancelledOutcome(sessionId: string): HostCommandOutcome {
+  return {
+    sessionId,
+    ok: false,
+    error: 'Tool call cancelled.',
+    exitCode: null,
+    stdout: '',
+    stderr: '',
+  };
 }
 
 function summarize(hosts: readonly HostCommandOutcome[]): BatchSummary {

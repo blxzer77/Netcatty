@@ -12,6 +12,8 @@
  * sync: the prompt test asserts the markers appear.
  */
 
+import { redactSecretsForModel } from './modelSecretRedaction';
+
 export const MACHINE_RECORD_START = '<!-- netcatty:agent-record:start -->';
 export const MACHINE_RECORD_END = '<!-- netcatty:agent-record:end -->';
 
@@ -140,14 +142,27 @@ function carryOverUnknownKeys(notes: string, record: MachineRecord): MachineReco
 }
 
 /** One-line summary for logs, prompts, and the compact activity view. */
+const MAX_MACHINE_RECORD_SUMMARY_CHARS = 1_000;
+
+function safeSummaryText(value: string): string {
+  return redactSecretsForModel(value)
+    .replace(/[\r\n]+/g, ' ')
+    .replaceAll(String.fromCharCode(0), ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function summarizeMachineRecord(record: MachineRecord | null): string | null {
   if (!record) return null;
   const parts: string[] = [];
-  if (record.role) parts.push(record.role);
-  if (record['last-action']) parts.push(record['last-action']);
-  if (record.watch?.length) parts.push(`watch: ${record.watch.join('; ')}`);
+  if (record.role) parts.push(safeSummaryText(record.role));
+  if (record['last-action']) parts.push(safeSummaryText(record['last-action']));
+  if (record.watch?.length) parts.push(`watch: ${record.watch.map(safeSummaryText).join('; ')}`);
   if (parts.length === 0) return null;
-  return parts.join(' | ');
+  const summary = parts.filter(Boolean).join(' | ');
+  return summary.length > MAX_MACHINE_RECORD_SUMMARY_CHARS
+    ? `${summary.slice(0, MAX_MACHINE_RECORD_SUMMARY_CHARS)}…`
+    : summary;
 }
 
 /**

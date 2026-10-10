@@ -51,13 +51,15 @@ export const PlanApprovalCard: React.FC<{
           <ul className="space-y-0.5">
             {preconditions.map((check) => (
               <li key={check.id} className="flex items-start gap-1.5 text-xs leading-5">
-                {check.ok ? (
+                {check.ok && check.verified !== false ? (
                   <ShieldCheck size={13} className="mt-0.5 shrink-0 text-emerald-500" />
                 ) : (
-                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-destructive" />
+                  <ShieldAlert size={13} className={`mt-0.5 shrink-0 ${check.ok ? 'text-amber-500' : 'text-destructive'}`} />
                 )}
                 <span className="min-w-0">
-                  <span className={check.ok ? '' : 'text-destructive'}>{check.label}</span>
+                  <span className={check.ok ? (check.verified === false ? 'text-amber-600 dark:text-amber-400' : '') : 'text-destructive'}>
+                    {check.label}{check.ok && check.verified === false ? ` (${t('ai.plan.unverified')})` : ''}
+                  </span>
                   {check.detail ? (
                     <span className="block text-muted-foreground">{check.detail}</span>
                   ) : null}

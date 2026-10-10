@@ -15,7 +15,7 @@ import {
   type ToolExecResult,
 } from '../shared/toolExecutors';
 import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutionQueue';
-import { proposePlan } from '../shared/planGate';
+import { proposePlan, type PlanDecision } from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
 import {
   compareHostOutputs,
@@ -24,6 +24,7 @@ import {
 } from './multiHostExecution';
 import {
   BACKUP_ACCESS_LABELS,
+  inferProxyRisk,
   parseBackupAccessDeclarations,
   verifyBackupAccess,
 } from './backupAccess';
@@ -35,6 +36,8 @@ import {
   isStreamingMonitorCommand,
 } from './terminalMonitorGuard';
 import type { ToolOutputStore } from './toolOutputStore';
+import { mergeMachineRecord, parseMachineRecord } from './machineRecord';
+import { runbookStepsToPlanSteps, validateRunbook, type Runbook } from './runbook';
 import { TOOL_OUTPUT_READ_MAX_CHARS } from './toolOutputStore';
 import {
   buildTerminalWriteFingerprint,
@@ -214,6 +217,7 @@ interface LocalExecutionContext {
   chatSessionId?: string;
   toolCallId?: string;
   abortSignal?: AbortSignal;
+  selectedRunbook?: Runbook;
 }
 
 /**
@@ -240,6 +244,12 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
         : String(step.command ?? `Step ${index + 1}`),
       ...(typeof step.toolName === 'string' ? { toolName: step.toolName } : {}),
       ...(typeof step.sessionId === 'string' ? { sessionId: step.sessionId } : {}),
+      ...(Array.isArray(step.sessionIds)
+        ? { sessionIds: step.sessionIds.filter((id): id is string => typeof id === 'string') }
+        : {}),
+      ...(step.args && typeof step.args === 'object' && !Array.isArray(step.args)
+        ? { args: step.args as Record<string, unknown> }
+        : {}),
       ...(typeof step.command === 'string' ? { command: step.command } : {}),
       ...(typeof step.reason === 'string' ? { reason: step.reason } : {}),
       ...(typeof step.verification === 'string' ? { verification: step.verification } : {}),
@@ -264,6 +274,7 @@ function parsePlanPreconditions(raw: unknown): { preconditions?: PlanPreconditio
         id: String(precondition.id ?? 'check'),
         label: String(precondition.label ?? precondition.id ?? 'check'),
         ok: precondition.ok === true,
+        verified: precondition.verified === true,
         ...(typeof precondition.detail === 'string' ? { detail: precondition.detail } : {}),
       };
     }),
@@ -297,6 +308,7 @@ interface HostCommandDeps {
   chatSessionId?: string;
   toolOutputStore?: ToolOutputStore;
   toolResultDedup?: ToolResultDedup;
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -310,7 +322,7 @@ async function runSingleHostCommand(
   sessionId: string,
   command: string,
 ): Promise<HostCommandOutcome> {
-  const { deps, chatSessionId, toolOutputStore, toolResultDedup } = ctx;
+  const { deps, chatSessionId, toolOutputStore, toolResultDedup, abortSignal } = ctx;
   const fingerprint = buildTerminalWriteFingerprint(
     'terminal_execute',
     deps.chatSessionId,
@@ -318,10 +330,11 @@ async function runSingleHostCommand(
   );
   const replay = fingerprint ? toolResultDedup?.replayCompletedWrite(fingerprint) : undefined;
   if (replay !== undefined) {
-    const replayed = replay as { stdout?: string; stderr?: string; exitCode?: number | null };
+    const replayed = replay as { stdout?: string; stderr?: string; exitCode?: number | null; error?: string };
     return {
       sessionId,
-      ok: true,
+      ok: !replayed.error,
+      ...(replayed.error ? { error: replayed.error } : {}),
       exitCode: replayed.exitCode ?? null,
       stdout: replayed.stdout ?? '',
       stderr: replayed.stderr ?? '',
@@ -329,7 +342,11 @@ async function runSingleHostCommand(
     };
   }
 
-  const result = await executeTerminalExecute(deps, { sessionId, command });
+  const result = await executeTerminalExecute(
+    deps,
+    { sessionId, command },
+    { abortSignal },
+  );
   const data = result.data ?? { stdout: '', stderr: '', exitCode: null };
   const fitted = fitTerminalExecuteResultForModel(
     { ...data, command, sessionId },
@@ -339,7 +356,7 @@ async function runSingleHostCommand(
   return {
     sessionId,
     ok: result.ok,
-    ...(result.ok ? {} : { error: result.error }),
+    ...(result.ok === false ? { error: result.error } : {}),
     exitCode: fitted.exitCode,
     stdout: fitted.stdout,
     stderr: fitted.stderr,
@@ -347,8 +364,62 @@ async function runSingleHostCommand(
   };
 }
 
+function runbookPlanMismatch(steps: PlanStep[], runbook: Runbook): string | null {
+  const expected = runbookStepsToPlanSteps(runbook);
+  if (steps.length !== expected.length) {
+    return `The plan must contain exactly the ${expected.length} steps from runbook "${runbook.name}".`;
+  }
+  for (let index = 0; index < expected.length; index += 1) {
+    const actual = steps[index];
+    const required = expected[index];
+    if (
+      actual.id !== required.id
+      || actual.title !== required.title
+      || actual.command !== required.command
+      || actual.verification !== required.verification
+    ) {
+      return `Plan step ${index + 1} does not match runbook step "${required.title}". Do not add, drop, or rewrite runbook steps.`;
+    }
+  }
+  return null;
+}
+
+async function prepareMachineNotesWrite(
+  deps: ToolDeps,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown> | { error: string }> {
+  const hostId = typeof args.hostId === 'string' ? args.hostId : '';
+  const notes = typeof args.notes === 'string' ? args.notes : '';
+  if (!hostId || !notes) return { error: 'host_notes_set requires hostId and a non-empty agent record.' };
+  if (!deps.bridge.aiCapability) return { error: 'Host notes bridge is unavailable.' };
+
+  const current = await invokeCapabilityRpc(
+    deps.bridge,
+    'vault/host/notes/get',
+    { hostId },
+    deps.chatSessionId,
+  );
+  if (current && typeof current === 'object' && 'error' in current) {
+    return { error: `Unable to read existing host notes before merging: ${String((current as { error: unknown }).error)}` };
+  }
+  const existingNotes = current && typeof current === 'object' && typeof (current as { notes?: unknown }).notes === 'string'
+    ? (current as { notes: string }).notes
+    : '';
+  const safeIncoming = redactSecretsForModel(notes);
+  const incomingRecord = parseMachineRecord(safeIncoming);
+  if (!incomingRecord) {
+    return {
+      error: 'host_notes_set requires the <!-- netcatty:agent-record:start --> ... end block. User prose is merged by Netcatty; do not replace the whole notes field.',
+    };
+  }
+  return {
+    hostId,
+    notes: mergeMachineRecord(existingNotes, incomingRecord),
+  };
+}
+
 async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<unknown> {
-  const { deps, spec, args, toolOutputStore, toolResultDedup, chatSessionId } = ctx;
+  const { deps, spec, args, toolOutputStore, toolResultDedup, chatSessionId, selectedRunbook } = ctx;
   const resolveContext = () => (typeof deps.context === 'function' ? deps.context() : deps.context);
 
   switch (spec.capabilityId) {
@@ -383,34 +454,54 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         };
       }
 
-      // A plan that could cut the proxy path has to prove it left a way back.
-      // The harness verifies what it can (a second live connection, a written
-      // recovery procedure) and carries the declared checks into the plan the
-      // user reads; it never claims to have verified what it cannot.
-      const proxyRisk = args.proxyRisk === true || String(args.proxyRisk) === 'true';
+      if (selectedRunbook) {
+        const runbookIssues = validateRunbook(selectedRunbook);
+        if (runbookIssues.length > 0) {
+          return {
+            error: `Selected runbook is not executable: ${runbookIssues.map(issue => issue.message).join(' ')}`,
+          };
+        }
+        const mismatch = runbookPlanMismatch(steps, selectedRunbook);
+        if (mismatch) return { error: mismatch };
+      }
+
+      // Infer proxy risk from the actual plan. The model may declare additional
+      // risk, but it cannot opt out of the red-line checks by omitting the flag.
+      const declaredProxyRisk = args.proxyRisk === true || String(args.proxyRisk) === 'true';
+      const proxyRisk = declaredProxyRisk || inferProxyRisk(steps);
       const parsedBackupAccess = parseBackupAccessDeclarations(args.backupAccess);
       if (parsedBackupAccess.error) return { error: parsedBackupAccess.error };
 
+      const targetHostsFor = () => {
+        const scopeContext = resolveContext();
+        const targetSessionIds = steps.flatMap(step => [
+          ...(step.sessionId ? [step.sessionId] : []),
+          ...(step.sessionIds ?? []),
+        ]);
+        const targetHosts = [...new Set(targetSessionIds)].map(sessionId => {
+          const session = scopeContext.sessions.find(entry => entry.sessionId === sessionId);
+          return { hostId: session?.hostId, hostname: session?.hostname ?? sessionId };
+        });
+        return { scopeContext, targetHosts };
+      };
+
       let backupAccessChecks: ReturnType<typeof verifyBackupAccess>['checks'] | undefined;
+      let validateApproval: (() => PlanDecision | void) | undefined;
       if (proxyRisk) {
         if (!parsedBackupAccess.declarations) {
           return {
             error: 'This plan could interrupt the proxy path, so backupAccess is required: all four checks (backup-connection, alternate-route, config-backup, recovery-plan) must be declared.',
           };
         }
-        const scopeContext = resolveContext();
-        const targetHosts = steps
-          .map(step => step.sessionId)
-          .filter((sessionId): sessionId is string => Boolean(sessionId))
-          .map(sessionId => {
-            const session = scopeContext.sessions.find(entry => entry.sessionId === sessionId);
-            return { hostId: session?.hostId, hostname: session?.hostname ?? sessionId };
+        const verifyCurrentBackupAccess = () => {
+          const { scopeContext, targetHosts } = targetHostsFor();
+          return verifyBackupAccess({
+            declarations: parsedBackupAccess.declarations!,
+            hosts: scopeContext.sessions,
+            targets: targetHosts,
           });
-        const verification = verifyBackupAccess({
-          declarations: parsedBackupAccess.declarations,
-          hosts: scopeContext.sessions,
-          targets: targetHosts,
-        });
+        };
+        const verification = verifyCurrentBackupAccess();
         backupAccessChecks = verification.checks;
         if (!verification.ok) {
           return {
@@ -418,6 +509,15 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
             backupAccessChecks,
           };
         }
+        validateApproval = () => {
+          const current = verifyCurrentBackupAccess();
+          return current.ok
+            ? undefined
+            : {
+                outcome: 'denied' as const,
+                note: `Backup-access checks no longer pass: ${current.blockReason}`,
+              };
+        };
       }
 
       const planPreconditions: PlanPreconditionResult[] = [
@@ -426,6 +526,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
           id: check.id,
           label: BACKUP_ACCESS_LABELS[check.id],
           ok: check.ok,
+          verified: check.verified,
           ...(check.detail ? { detail: check.detail } : {}),
         })),
       ];
@@ -435,6 +536,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         steps,
         preconditions: planPreconditions.length > 0 ? planPreconditions : undefined,
         chatSessionId,
+        validateApproval,
         // The tool call id doubles as the plan id so a retried submission joins
         // the pending decision instead of raising a second request.
         planId: ctx.toolCallId,
@@ -452,7 +554,12 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       return {
         approved: true,
         planId: ctx.toolCallId,
-        steps: steps.map(step => ({ id: step.id, title: step.title, ...(step.toolName ? { toolName: step.toolName } : {}) })),
+        steps: steps.map(step => ({
+          id: step.id,
+          title: step.title,
+          ...(step.toolName ? { toolName: step.toolName } : {}),
+          ...(step.args ? { args: step.args } : {}),
+        })),
         instruction: 'Plan approved. Execute the steps in order and verify each one before moving on. If reality diverges from the plan, stop and tell the user instead of continuing.',
       };
     }
@@ -488,9 +595,10 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         command,
         mode,
         stopOnError,
-        reserveSlot: (sessionId) => reserveSessionSlot(hostWriteQueueKey(sessionId)),
+        signal: ctx.abortSignal,
+        reserveSlot: (sessionId) => reserveSessionSlot(resolveHostWriteQueueKey(deps.context, sessionId)),
         runOnHost: (sessionId) => runSingleHostCommand(
-          { deps, chatSessionId, toolOutputStore, toolResultDedup },
+          { deps, chatSessionId, toolOutputStore, toolResultDedup, abortSignal: ctx.abortSignal },
           sessionId,
           command,
         ),
@@ -686,10 +794,20 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
   }
 }
 
+function resolveHostWriteQueueKey(
+  context: ToolDeps['context'],
+  sessionId: string,
+): string {
+  const resolved = typeof context === 'function' ? context() : context;
+  const hostId = resolved.sessions.find(session => session.sessionId === sessionId)?.hostId;
+  return hostWriteQueueKey(hostId ? `id:${hostId}` : `session:${sessionId}`);
+}
+
 function resolveSessionQueueKey(
   spec: CattyToolSpec,
   args: Record<string, unknown>,
   chatSessionId?: string,
+  context?: ToolDeps['context'],
 ): string | null {
   if (spec.capabilityId.startsWith('harness.') && !spec.policy.write) {
     return null;
@@ -697,10 +815,14 @@ function resolveSessionQueueKey(
 
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId : undefined;
   if (sessionId) {
-    // Host writes are serialized process-wide, not per chat session: two panels
-    // driving the same machine must not interleave. Reads keep their per-session
-    // order so one session's reads stay in sequence.
-    return spec.policy.write ? hostWriteQueueKey(sessionId) : `${chatSessionId ?? 'global'}:${sessionId}`;
+    // Host writes are serialized process-wide, not per chat session or terminal
+    // session: duplicate connections to one host must not interleave.
+    return spec.policy.write
+      ? resolveHostWriteQueueKey(context ?? { sessions: [] }, sessionId)
+      : `${chatSessionId ?? 'global'}:${sessionId}`;
+  }
+  if (spec.capabilityId === 'vault.host.notes.set' && typeof args.hostId === 'string') {
+    return hostWriteQueueKey(`id:${args.hostId}`);
   }
   return `${chatSessionId ?? 'global'}:${spec.toolName}`;
 }
@@ -709,8 +831,9 @@ export function resolveSessionQueueKeyForTests(
   spec: Pick<CattyToolSpec, 'capabilityId' | 'toolName' | 'policy'>,
   args: Record<string, unknown>,
   chatSessionId?: string,
+  context?: ToolDeps['context'],
 ): string | null {
-  return resolveSessionQueueKey(spec as CattyToolSpec, args, chatSessionId);
+  return resolveSessionQueueKey(spec as CattyToolSpec, args, chatSessionId, context);
 }
 
 function createCatalogTool(spec: CattyToolSpec) {
@@ -735,6 +858,7 @@ function createCatalogTool(spec: CattyToolSpec) {
         spec,
         args as Record<string, unknown>,
         deps.chatSessionId,
+        deps.context,
       );
       const slot = queueKey ? reserveSessionSlot(queueKey) : null;
 
@@ -763,14 +887,12 @@ function createCatalogTool(spec: CattyToolSpec) {
               note: 'The command already executed before request compaction; its recorded result was replayed and the command was not executed again.',
             };
           }
-          const cancelOnAbort = () => {
-            if (deps.chatSessionId) {
-              void deps.bridge.aiCattyCancelExec?.(deps.chatSessionId);
-            }
-          };
-          abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
-          try {
-            const result = await executeTerminalExecute(deps, { sessionId: sid, command });
+          {
+            const result = await executeTerminalExecute(
+              deps,
+              { sessionId: sid, command },
+              { abortSignal },
+            );
             if (result.ok === false) {
               if (!result.data) return unwrap(result);
               const fittedFailure = {
@@ -804,8 +926,6 @@ function createCatalogTool(spec: CattyToolSpec) {
             });
             if (writeFingerprint) toolResultDedup?.rememberCompletedWrite(writeFingerprint, fitted);
             return fitted;
-          } finally {
-            abortSignal?.removeEventListener('abort', cancelOnAbort);
           }
         }
 
@@ -819,6 +939,7 @@ function createCatalogTool(spec: CattyToolSpec) {
             chatSessionId: deps.chatSessionId,
             toolCallId,
             abortSignal,
+            selectedRunbook: toolContext.selectedRunbook,
           });
           return fitCapabilityResultForModel(
             result,
@@ -854,10 +975,16 @@ function createCatalogTool(spec: CattyToolSpec) {
           };
         }
 
+        let rpcParams = args as Record<string, unknown>;
+        if (spec.capabilityId === 'vault.host.notes.set') {
+          const merged = await prepareMachineNotesWrite(deps, rpcParams);
+          if ('error' in merged) return merged;
+          rpcParams = merged;
+        }
         let raw = await invokeCapabilityRpc(
           deps.bridge,
           spec.rpcMethod,
-          args as Record<string, unknown>,
+          rpcParams,
           deps.chatSessionId,
         );
         if (
@@ -1053,6 +1180,7 @@ export function buildCattyToolContext(input: {
   chatSessionId?: string;
   toolOutputStore?: ToolOutputStore;
   toolResultDedup?: ToolResultDedup;
+  selectedRunbook?: Runbook;
 }): CattyToolContext {
   return {
     bridge: input.bridge,
@@ -1065,6 +1193,7 @@ export function buildCattyToolContext(input: {
       : () => input.context as ExecutorContext,
     toolOutputStore: input.toolOutputStore,
     toolResultDedup: input.toolResultDedup,
+    selectedRunbook: input.selectedRunbook,
   };
 }
 
@@ -1077,6 +1206,7 @@ export function createCattyToolsFromCatalog(
   chatSessionId?: string,
   toolOutputStore?: ToolOutputStore,
   toolResultDedup?: ToolResultDedup,
+  selectedRunbook?: Runbook,
 ): CattyToolsBundle {
   const sharedContext = buildCattyToolContext({
     bridge,
@@ -1087,6 +1217,7 @@ export function createCattyToolsFromCatalog(
     chatSessionId,
     toolOutputStore,
     toolResultDedup,
+    selectedRunbook,
   });
 
   const catalogTools: Record<string, ReturnType<typeof tool>> = {};
