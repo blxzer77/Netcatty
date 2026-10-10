@@ -17,6 +17,8 @@
 !.gitignore
 !.npmrc
 !AGENTS.md
+!.agents/
+!.agents/**
 !App.tsx
 !CHANGELOG.md
 !CLAUDE.md

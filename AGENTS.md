@@ -305,3 +305,17 @@ Replace manual panel structure:
   - Render AsidePanel at the root level of your section (e.g., VaultView root div)
   - Do NOT render AsidePanel inside a scrollable content area or nested containers
   - The parent container should be `absolute inset-0` or have `relative` positioning
+
+## Agent workflow and branch policy
+
+This fork keeps maintainer workflows and durable decisions under [`.agents/`](.agents/). The root `AGENTS.md` remains the repository authority; use the focused procedures in `.agents/skills/` for pre-push checks, code review, prose, Agent Notes, and Pi integration. Durable architectural choices belong in `.agents/notes/`; archived notes are historical and must not be edited.
+
+The fork has three branch roles:
+
+- `main` mirrors `upstream/main` and receives no product changes.
+- `catty-main` is the product branch for the Catty and Pi fork.
+- `feature/*`, `fix/*`, and `chore/*` are short-lived branches created from `catty-main`, merged back into `catty-main`, and deleted both locally and from `origin` after merge.
+
+Keep `origin` pointed at the fork and `upstream` pointed at `binaricat/Netcatty`. Never push product work to `upstream`.
+
+Before publishing, run the smallest checks that cover the diff. Pi or bridge changes require focused driver, discovery, settings, state, and event tests; packaging changes require a build and the relevant packaged-app check. Use `git diff --cached --check` before committing and `git diff --check` before pushing.

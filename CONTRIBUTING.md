@@ -73,21 +73,28 @@ npm test               # Run the test suite
 ## Pull Request Process
 
 1. Fork the repository.
-2. Create a feature branch:
+2. Start from the product branch and create a short-lived work branch:
    ```bash
-   git checkout -b feature/your-feature-name
+   git switch catty-main
+   git switch -c feature/your-feature-name
    ```
 3. Make your changes, following the existing project style.
 4. Commit with a clear message:
    ```bash
    git commit -m 'feat: add amazing feature'
    ```
-5. Push the branch and open a Pull Request against `main`. Use the checklist in
+5. Push the branch to your fork and open a Pull Request against `catty-main`. The `main` branch mirrors upstream and is not a product-development target. Use the checklist in
    [`.github/PULL_REQUEST_TEMPLATE.md`](https://github.com/binaricat/Netcatty/blob/main/.github/PULL_REQUEST_TEMPLATE.md).
 6. Run `npm run lint` and `npm test` before requesting review.
 7. If you changed the capability catalog, run `npm run generate:capability-tools`
    and commit any generated updates.
 8. Ensure all CI checks pass before requesting review.
+9. After the Pull Request is merged, delete the work branch locally and from the fork:
+   ```bash
+   git switch catty-main
+   git branch -d feature/your-feature-name
+   git push origin --delete feature/your-feature-name
+   ```
 
 ## Commit Message Convention
 
