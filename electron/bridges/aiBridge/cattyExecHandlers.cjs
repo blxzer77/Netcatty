@@ -22,15 +22,17 @@ function targetIdentityError(actual, expected) {
   if (typeof expected.hostId === "string" && expected.hostId && actual?.hostId !== expected.hostId) {
     return "Execution target host identity changed; submit a new plan.";
   }
-  if (typeof expected.hostname === "string" && expected.hostname
-    && typeof actual?.hostname === "string"
-    && actual.hostname.trim().toLowerCase() !== expected.hostname.trim().toLowerCase()) {
-    return "Execution target hostname changed; submit a new plan.";
+  if (typeof expected.hostname === "string" && expected.hostname) {
+    if (typeof actual?.hostname !== "string" || !actual.hostname.trim()
+      || actual.hostname.trim().toLowerCase() !== expected.hostname.trim().toLowerCase()) {
+      return "Execution target hostname changed or is incomplete; submit a new plan.";
+    }
   }
-  if (typeof expected.protocol === "string" && expected.protocol
-    && typeof actual?.protocol === "string"
-    && actual.protocol.toLowerCase() !== expected.protocol.toLowerCase()) {
-    return "Execution target protocol changed; submit a new plan.";
+  if (typeof expected.protocol === "string" && expected.protocol) {
+    if (typeof actual?.protocol !== "string" || !actual.protocol
+      || actual.protocol.toLowerCase() !== expected.protocol.toLowerCase()) {
+      return "Execution target protocol changed or is incomplete; submit a new plan.";
+    }
   }
   return null;
 }

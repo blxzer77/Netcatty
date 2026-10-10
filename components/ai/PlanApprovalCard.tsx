@@ -147,9 +147,7 @@ function formatPlanText(value: string | undefined): string {
   if (!value) return '';
   const redacted = redactSecretsForModel(value)
     .replace(/(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, '$1[REDACTED]');
-  return redacted === value
-    ? redacted
-    : `${redacted} [length=${value.length} fingerprint=${fingerprint(value)}]`;
+  return redacted;
 }
 
 function redactPlanPreview(value: unknown, key?: string): unknown {

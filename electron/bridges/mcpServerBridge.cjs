@@ -2060,19 +2060,17 @@ async function dispatch(method, params, approvalContext = {}) {
     if (!liveSession || liveSession.hostId !== params.expectedHostId) {
       return { ok: false, error: "Execution target host identity changed; submit a new plan." };
     }
-    if (
-      params.expectedHostname
-      && liveSession.hostname
-      && String(liveSession.hostname).trim().toLowerCase() !== String(params.expectedHostname).trim().toLowerCase()
-    ) {
-      return { ok: false, error: "Execution target hostname changed; submit a new plan." };
+    if (params.expectedHostname) {
+      if (!liveSession.hostname
+        || String(liveSession.hostname).trim().toLowerCase() !== String(params.expectedHostname).trim().toLowerCase()) {
+        return { ok: false, error: "Execution target hostname changed or is incomplete; submit a new plan." };
+      }
     }
-    if (
-      params.expectedProtocol
-      && liveSession.protocol
-      && String(liveSession.protocol).toLowerCase() !== String(params.expectedProtocol).toLowerCase()
-    ) {
-      return { ok: false, error: "Execution target protocol changed; submit a new plan." };
+    if (params.expectedProtocol) {
+      if (!liveSession.protocol
+        || String(liveSession.protocol).toLowerCase() !== String(params.expectedProtocol).toLowerCase()) {
+        return { ok: false, error: "Execution target protocol changed or is incomplete; submit a new plan." };
+      }
     }
   }
   pruneCompletedBackgroundJobs();

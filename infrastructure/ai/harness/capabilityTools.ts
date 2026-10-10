@@ -15,7 +15,12 @@ import {
   type ToolExecResult,
 } from '../shared/toolExecutors';
 import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutionQueue';
-import { hasUnsafePlanCommand, proposePlan, type PlanDecision } from '../shared/planGate';
+import {
+  commitToolCoveredByApprovedPlan,
+  hasUnsafePlanCommand,
+  proposePlan,
+  type PlanDecision,
+} from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
 import {
   compareHostOutputs,
@@ -620,7 +625,7 @@ interface PlanTargetIdentity {
   sessionId: string;
   hostId: string;
   hostname: string;
-  protocol?: string;
+  protocol: string;
 }
 
 function capturePlanTargetIdentities(
@@ -645,7 +650,7 @@ function capturePlanTargetIdentities(
           sessionId,
           hostId: session.hostId,
           hostname: session.hostname.trim().toLowerCase(),
-          ...(session.protocol ? { protocol: session.protocol.toLowerCase() } : {}),
+          protocol: session.protocol!.trim().toLowerCase(),
         }]
       : [];
   });
@@ -695,6 +700,9 @@ function validatePlanTargets(steps: readonly PlanStep[], context: ExecutorContex
     const session = context.sessions.find(entry => entry.sessionId === sessionId);
     if (!session) return `Plan target session "${sessionId}" is not in the current scope.`;
     if (!session.connected) return `Plan target session "${sessionId}" is no longer connected.`;
+    if (!session.hostId || !session.hostname.trim() || !session.protocol?.trim()) {
+      return `Plan target session "${sessionId}" has incomplete host identity; reconnect and submit a new plan.`;
+    }
   }
   for (const step of steps) {
     const args = step.args;
@@ -703,6 +711,9 @@ function validatePlanTargets(steps: readonly PlanStep[], context: ExecutorContex
     const hostSessions = context.sessions.filter(entry => entry.connected && entry.hostId === declaredHostId);
     if (hostSessions.length === 0) {
       return `Plan target host "${declaredHostId}" is not connected in the current scope.`;
+    }
+    if (hostSessions.some(session => !session.hostname.trim() || !session.protocol?.trim())) {
+      return `Plan target host "${declaredHostId}" has incomplete host identity; reconnect and submit a new plan.`;
     }
     const stepSessionIds = [
       ...(step.sessionId ? [step.sessionId] : []),
@@ -1535,6 +1546,16 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
         return fittedRaw;
         })();
+        if (
+          spec.policy.write
+          && deps.chatSessionId
+          && !(result && typeof result === 'object' && (
+            (result as { ok?: unknown }).ok === false
+            || typeof (result as { error?: unknown }).error === 'string'
+          ))
+        ) {
+          commitToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
+        }
         if (toolOutputStore && deps.chatSessionId) {
           await toolOutputStore.flush(deps.chatSessionId);
           return toolOutputStore.resolveRestartPersistenceNotices(result, deps.chatSessionId);

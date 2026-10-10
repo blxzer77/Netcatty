@@ -501,6 +501,32 @@ export function isToolCoveredByApprovedPlan(
       comparableArgs,
     )) continue;
 
+    return true;
+  }
+  return false;
+}
+
+/** Commit the current approved step only after its tool handler succeeded. */
+export function commitToolCoveredByApprovedPlan(
+  chatSessionId: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+): boolean {
+  if (!chatSessionId) return false;
+  const scopes = approvedPlansByChatSession.get(chatSessionId);
+  if (!scopes?.length) return false;
+  const comparableArgs = normalizePlanArgs(toolName, args);
+  const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
+  const sessionIds = Array.isArray(comparableArgs.sessionIds)
+    ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  for (const scope of scopes) {
+    if (scope.validateExecution?.()) continue;
+    const step = scope.steps[scope.nextStepIndex];
+    if (!step || step.toolName !== toolName) continue;
+    if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) continue;
+    const expectedArgs = expectedPlanArgs(step);
+    if (!expectedArgs || !samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs)) continue;
     scope.nextStepIndex += 1;
     return true;
   }

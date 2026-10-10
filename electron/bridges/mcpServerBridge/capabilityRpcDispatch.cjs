@@ -200,6 +200,16 @@ function createCapabilityRpcDispatcher(deps) {
       if (!meta || meta.connected !== true || (meta.hostId || meta.savedHostId) !== scopedParams.expectedHostId) {
         return { ok: false, error: "Execution target host identity changed; submit a new plan." };
       }
+      if (scopedParams.expectedHostname
+        && (!meta.hostname
+          || String(meta.hostname).trim().toLowerCase() !== String(scopedParams.expectedHostname).trim().toLowerCase())) {
+        return { ok: false, error: "Execution target hostname changed or is incomplete; submit a new plan." };
+      }
+      if (scopedParams.expectedProtocol
+        && (!meta.protocol
+          || String(meta.protocol).toLowerCase() !== String(scopedParams.expectedProtocol).toLowerCase())) {
+        return { ok: false, error: "Execution target protocol changed or is incomplete; submit a new plan." };
+      }
     }
 
     if (
