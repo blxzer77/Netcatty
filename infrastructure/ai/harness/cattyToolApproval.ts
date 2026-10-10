@@ -47,22 +47,30 @@ export function buildCattyToolApproval(input: {
     if (permissionMode === 'observer' && !spec.policy.bypassesObserverBlock) {
       return { type: 'denied' as const, reason: 'Observer mode blocks write operations.' };
     }
+    // Plan submission is the proposal step, not an approved host mutation.
+    if (spec.capabilityId === 'harness.plan.submit') return undefined;
 
-    if (!needsUserApproval(toolCall.toolName, permissionMode)) {
-      return undefined;
-    }
-
-    // An approved plan is the unit of consent for the exact steps it names. A
-    // tool call must match the same tool, target session(s), and structured
-    // arguments; anything the plan did not name still goes through the gate.
-    if (isToolCoveredByApprovedPlan(chatSessionId, toolCall.toolName, args)) {
-      return undefined;
-    }
+    // An approved plan is the unit of consent for every Catty write, including
+    // Auto mode. A tool call must match the same tool, target session(s), and
+    // structured arguments; anything the plan did not name is denied rather
+    // than falling back to an ad-hoc approval path.
     if (hasApprovedPlanScope(chatSessionId)) {
+      if (isToolCoveredByApprovedPlan(chatSessionId, toolCall.toolName, args)) {
+        return undefined;
+      }
       return {
         type: 'denied' as const,
         reason: 'This write is outside the approved plan. Submit a new plan for it.',
       };
+    }
+    if (permissionMode === 'auto') {
+      return {
+        type: 'denied' as const,
+        reason: 'Submit a plan before executing a Catty write in Auto mode.',
+      };
+    }
+    if (!needsUserApproval(toolCall.toolName, permissionMode)) {
+      return undefined;
     }
     const approved = await requestApproval(
       toolCall.toolCallId,

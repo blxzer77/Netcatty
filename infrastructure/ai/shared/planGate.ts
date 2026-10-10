@@ -48,6 +48,7 @@ export type PlanClearedListener = (planIds: string[]) => void;
 
 interface PendingPlanEntry {
   plan: ProposedPlan;
+  presentedPlan: ProposedPlan;
   resolve: (decision: PlanDecision) => void;
   /** Re-checks safety-critical preconditions immediately before approval. */
   validateApproval?: () => PlanDecision | void;
@@ -212,6 +213,14 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
     preconditions: input.preconditions,
     chatSessionId: input.chatSessionId,
   };
+  const presentedPlan: ProposedPlan = {
+    ...plan,
+    goal: String(redactTraceValue(plan.goal)),
+    steps: redactTraceSteps(plan.steps),
+    preconditions: plan.preconditions
+      ? redactTraceValue(plan.preconditions) as PlanPreconditionResult[]
+      : undefined,
+  };
 
   const existing = pendingPlans.get(planId);
   if (existing) {
@@ -311,6 +320,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
 
     pendingPlans.set(planId, {
       plan,
+      presentedPlan,
       resolve: settle,
       validateApproval: input.validateApproval,
       validateExecution: input.validateExecution,
@@ -347,7 +357,7 @@ export function proposePlan(input: ProposePlanInput): Promise<PlanDecision> {
     });
 
     for (const listener of proposedListeners) {
-      try { listener(plan); } catch { /* ignore listener errors */ }
+      try { listener(presentedPlan); } catch { /* ignore listener errors */ }
     }
 
     // Armed last: a zero-length idle window must deny after the request has
@@ -608,7 +618,7 @@ export function hasApprovedPlanScope(chatSessionId: string | undefined): boolean
 
 export function replayPendingPlans(listener: PlanProposedListener): void {
   for (const [, entry] of pendingPlans) {
-    try { listener(entry.plan); } catch { /* ignore listener errors */ }
+    try { listener(entry.presentedPlan); } catch { /* ignore listener errors */ }
   }
 }
 

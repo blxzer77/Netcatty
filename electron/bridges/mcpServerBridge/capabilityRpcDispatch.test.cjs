@@ -50,7 +50,7 @@ test("dispatchCapabilityRpc routes vault host notes get to vault service", async
     },
   });
 
-  const result = await dispatch("vault/host/notes/get", { hostId: "host-1" });
+  const result = await dispatch("vault/host/notes/get", { hostId: "host-1" }, { chatSessionId: "chat-1" });
   assert.equal(invokedOp, "host.notes.get");
   assert.equal(result.ok, true);
   assert.equal(result.notes, "notes");
@@ -395,7 +395,7 @@ test("dispatchCapabilityRpc routes portforward start to portforward service", as
     chatSessionId: "chat-1",
     ruleId: "rule-1",
     hostId: "host-1",
-  });
+  }, { chatSessionId: "chat-1" });
   assert.equal(invokedOp, "portforward.start");
   assert.equal(result.ok, true);
   assert.equal(result.ruleId, "rule-1");
@@ -414,7 +414,7 @@ test("chat-scoped portforward rejects a host outside the live session scope", as
     chatSessionId: "chat-1",
     ruleId: "rule-1",
     hostId: "host-outside-scope",
-  });
+  }, { chatSessionId: "chat-1" });
   assert.equal(result.ok, false);
   assert.match(result.error, /not connected in the current chat scope/);
   assert.equal(invoked, false);
@@ -436,7 +436,7 @@ test("portforward cancellation waits for start and stops the exact rule", async 
     chatSessionId: "chat-cancel-pf",
     ruleId: "rule-1",
     hostId: "host-1",
-  });
+  }, { chatSessionId: "chat-cancel-pf" });
   await new Promise(resolve => setImmediate(resolve));
   const pendingCancel = dispatch.cancelChatSessionOperations("chat-cancel-pf");
   let settled = false;

@@ -130,12 +130,6 @@ function createCapabilityRpcDispatcher(deps) {
   };
 
   const dispatchCapabilityRpc = async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
-    const trustedChatSessionId = typeof approvalContext.chatSessionId === "string"
-      ? approvalContext.chatSessionId
-      : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
-    const scopedParams = trustedChatSessionId
-      ? { ...params, chatSessionId: trustedChatSessionId }
-      : params;
     if (typeof rpcMethod !== "string" || rpcMethod.startsWith("netcatty/")) {
       return UNROUTED;
     }
@@ -158,6 +152,17 @@ function createCapabilityRpcDispatcher(deps) {
     if (!binding) {
       return UNROUTED;
     }
+    const requiresTrustedChatSession = surface === CAPABILITY_SURFACES.GLOBAL
+      && ["vault.host.notes.get", "vault.host.notes.set", "portforward.start", "portforward.stop"].includes(capability.id);
+    if (requiresTrustedChatSession && typeof approvalContext.chatSessionId !== "string") {
+      return { ok: false, error: "A trusted Catty chat scope is required for this capability." };
+    }
+    const trustedChatSessionId = typeof approvalContext.chatSessionId === "string"
+      ? approvalContext.chatSessionId
+      : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
+    const scopedParams = trustedChatSessionId
+      ? { ...params, chatSessionId: trustedChatSessionId }
+      : params;
 
     // Only session.close executes against params.sessionId. host.open instead
     // targets its requested vault host; other vault/script operations must not

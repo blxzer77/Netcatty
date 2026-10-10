@@ -309,6 +309,31 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
       ...(typeof step.risk === 'string' ? { risk: step.risk as PlanStep['risk'] } : {}),
     } satisfies PlanStep;
   });
+  const validToolNames = new Set((cattyToolSpecs as CattyToolSpec[])
+    .filter(spec => spec.policy.write)
+    .map(spec => spec.toolName));
+  const invalidToolStep = steps.find(step => !step.toolName || !validToolNames.has(step.toolName));
+  if (invalidToolStep) {
+    return { error: `Plan step "${invalidToolStep.title}" names a tool that is not an approved Catty write capability.` };
+  }
+  const incompleteDescriptionStep = steps.find(step => !step.reason?.trim() || !step.verification?.trim());
+  if (incompleteDescriptionStep) {
+    return { error: `Plan step "${incompleteDescriptionStep.title}" must include a reason and verification.` };
+  }
+  const invalidArgsStep = steps.find(step => {
+    const spec = (cattyToolSpecs as CattyToolSpec[]).find(entry => entry.toolName === step.toolName);
+    if (!spec || !step.args) return true;
+    const args = step.args;
+    const fields = spec.inputShape;
+    if (Object.keys(args).some(key => !Object.prototype.hasOwnProperty.call(fields, key))) return true;
+    return Object.entries(fields).some(([key, field]) => {
+      if (!Object.prototype.hasOwnProperty.call(args, key)) return !field.optional;
+      return field.type === 'number' ? typeof args[key] !== 'number' : typeof args[key] !== 'string';
+    });
+  });
+  if (invalidArgsStep) {
+    return { error: `Plan step "${invalidArgsStep.title}" has arguments that do not match its Catty tool schema.` };
+  }
   const unsafeCommandStep = steps.find(step => {
     if (!['terminal_execute', 'terminal_start', 'terminal_batch'].includes(step.toolName ?? '')) return false;
     const command = step.command ?? (typeof step.args?.command === 'string' ? step.args.command : '');
@@ -473,6 +498,7 @@ function runbookTargetMismatch(
   if (selectors.length === 0) return 'The runbook targets field must name at least one exact session, host ID, hostname, or host label.';
 
   const expectedHostIds = new Set<string>();
+  const expectedSessionIds = new Set<string>();
   for (const selector of selectors) {
     const matches = context.sessions.filter(session => session.connected && [
       session.sessionId,
@@ -485,8 +511,12 @@ function runbookTargetMismatch(
       return `Runbook target "${selector}" is not an exact, unique connected host in the current scope.`;
     }
     for (const hostId of hostIds) expectedHostIds.add(hostId);
+    for (const match of matches) {
+      if (match.sessionId.toLowerCase() === selector.toLowerCase()) expectedSessionIds.add(match.sessionId);
+    }
   }
 
+  const actualSessionIds = new Set<string>();
   const actualHostIds = new Set<string>();
   for (const step of steps) {
     const sessionIds = [
@@ -497,9 +527,19 @@ function runbookTargetMismatch(
     ];
     for (const sessionId of sessionIds) {
       const session = context.sessions.find(entry => entry.sessionId === sessionId && entry.connected);
-      if (session?.hostId) actualHostIds.add(session.hostId);
+      if (session?.hostId) {
+        actualHostIds.add(session.hostId);
+        actualSessionIds.add(session.sessionId);
+      }
     }
     if (typeof step.args?.hostId === 'string') actualHostIds.add(step.args.hostId);
+  }
+  if (
+    expectedSessionIds.size > 0
+    && ([...expectedSessionIds].some(sessionId => !actualSessionIds.has(sessionId))
+      || [...actualSessionIds].some(sessionId => !expectedSessionIds.has(sessionId)))
+  ) {
+    return `Plan sessions do not match the exact runbook session targets (${selectors.join(', ')}).`;
   }
   if (actualHostIds.size === 0 || [...actualHostIds].some(hostId => !expectedHostIds.has(hostId))) {
     return `Plan targets do not match the runbook targets (${selectors.join(', ')}).`;
@@ -751,6 +791,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       };
 
       let backupAccessChecks: ReturnType<typeof verifyBackupAccess>['checks'] | undefined;
+      let verifyCurrentBackupAccess: (() => ReturnType<typeof verifyBackupAccess>) | undefined;
       const validateCurrentTargets = () => {
         const currentContext = resolveContext();
         const targetError = validatePlanTargets(steps, currentContext)
@@ -766,7 +807,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
             error: 'This plan could interrupt the proxy path, so backupAccess is required: all four checks (backup-connection, alternate-route, config-backup, recovery-plan) must be declared.',
           };
         }
-        const verifyCurrentBackupAccess = () => {
+        const verifyBackup = () => {
           const { scopeContext, targetHosts } = targetHostsFor();
           return verifyBackupAccess({
             declarations: parsedBackupAccess.declarations!,
@@ -774,7 +815,8 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
             targets: targetHosts,
           });
         };
-        const verification = verifyCurrentBackupAccess();
+        verifyCurrentBackupAccess = verifyBackup;
+        const verification = verifyBackup();
         backupAccessChecks = verification.checks;
         if (!verification.ok) {
           return {
@@ -815,8 +857,13 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         signal: ctx.abortSignal,
         validateExecution: () => {
           const currentContext = resolveContext();
-          return validatePlanTargets(steps, currentContext)
+          const targetError = validatePlanTargets(steps, currentContext)
             ?? validatePlanTargetIdentities(targetIdentities, currentContext);
+          if (targetError) return targetError;
+          const currentBackup = verifyCurrentBackupAccess?.();
+          return currentBackup && !currentBackup.ok
+            ? `Backup-access checks no longer pass: ${currentBackup.blockReason}`
+            : null;
         },
         // The tool call id doubles as the plan id so a retried submission joins
         // the pending decision instead of raising a second request.
@@ -1084,15 +1131,17 @@ function resolveHostWriteQueueKey(
 ): string {
   const resolved = typeof context === 'function' ? context() : context;
   const session = resolved.sessions.find(entry => entry.sessionId === sessionId);
-  // Prefer hostname for every session when it is available so a connection
-  // with a missing hostId still shares the same mutex as a vault-backed
-  // connection to that host. The main process remains the canonical identity
-  // authority; this is only the renderer-side conservative fallback.
-  if (session?.hostname) {
-    const protocol = session.protocol?.toLowerCase() || 'unknown';
-    return hostWriteQueueKey(`name:${session.hostname.trim().toLowerCase()}:${protocol}`);
-  }
   if (session?.hostId) return hostWriteQueueKey(`id:${session.hostId}`);
+  if (session?.hostname) {
+    const hostname = session.hostname.trim().toLowerCase();
+    const canonicalPeer = resolved.sessions.find(entry =>
+      entry.hostId
+      && entry.hostname?.trim().toLowerCase() === hostname,
+    );
+    if (canonicalPeer?.hostId) return hostWriteQueueKey(`id:${canonicalPeer.hostId}`);
+    const protocol = session.protocol?.toLowerCase() || 'unknown';
+    return hostWriteQueueKey(`name:${hostname}:${protocol}`);
+  }
   return hostWriteQueueKey(`session:${sessionId}`);
 }
 

@@ -58,7 +58,7 @@ export interface RunCommandOnSessionsInput {
 
 const MAX_COMPARE_LINES_PER_HOST = 20;
 
-const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|ps|top|ss|netstat|nginx)(?:\s|$)/i;
+const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|ps|top|ss|netstat|nginx\s+-v)(?:\s|$)/i;
 
 /**
  * Compare is intentionally conservative: a shell command is not considered

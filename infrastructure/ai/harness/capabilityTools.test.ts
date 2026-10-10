@@ -85,6 +85,37 @@ describe('capabilityTools session queue keys', () => {
     assert.equal(key, 'host:name:shared.example:ssh');
   });
 
+  it('prefers host identity over differing connection hostnames', () => {
+    const spec = {
+      capabilityId: 'terminal.execute',
+      toolName: 'terminal_execute',
+      policy: { write: true, bypassesApproval: false },
+    } as const;
+    const first = resolveSessionQueueKeyForTests(spec, { sessionId: 'session-a', command: 'ls' }, 'chat-1', {
+      sessions: [{ sessionId: 'session-a', hostId: 'host-1', hostname: 'alias.example' }],
+    } as never);
+    const second = resolveSessionQueueKeyForTests(spec, { sessionId: 'session-b', command: 'ls' }, 'chat-2', {
+      sessions: [{ sessionId: 'session-b', hostId: 'host-1', hostname: '203.0.113.10' }],
+    } as never);
+    assert.equal(first, 'host:id:host-1');
+    assert.equal(second, 'host:id:host-1');
+  });
+
+  it('joins a hostId-less connection to a matching canonical peer', () => {
+    const spec = {
+      capabilityId: 'terminal.execute',
+      toolName: 'terminal_execute',
+      policy: { write: true, bypassesApproval: false },
+    } as const;
+    const key = resolveSessionQueueKeyForTests(spec, { sessionId: 'session-b', command: 'ls' }, 'chat-2', {
+      sessions: [
+        { sessionId: 'session-a', hostId: 'host-1', hostname: 'shared.example' },
+        { sessionId: 'session-b', hostname: 'SHARED.EXAMPLE' },
+      ],
+    } as never);
+    assert.equal(key, 'host:id:host-1');
+  });
+
   it('serializes port-forward writes by host across chat sessions', () => {
     const spec = {
       capabilityId: 'portforward.start',
@@ -864,6 +895,8 @@ describe('capabilityTools submit_plan', () => {
         toolName: 'terminal_execute',
         sessionId: 'session-a',
         command: 'systemctl reload v2ray',
+        reason: 'Reload the proxy after the change',
+        verification: 'The proxy reports healthy status',
         args: { sessionId: 'session-a', command: 'systemctl reload v2ray' },
       }]),
       proxyRisk: 'true',
@@ -913,6 +946,8 @@ describe('capabilityTools submit_plan', () => {
         toolName: 'terminal_execute',
         sessionId: 'session-a',
         command: 'systemctl reload v2ray',
+        reason: 'Reload the proxy after the change',
+        verification: 'The proxy reports healthy status',
         args: { sessionId: 'session-a', command: 'systemctl reload v2ray' },
       }]),
       proxyRisk: 'true',
@@ -936,7 +971,7 @@ describe('capabilityTools submit_plan', () => {
       'plan-proxy-missing',
     ).execute({
       goal: 'reload the proxy service',
-      steps: JSON.stringify([{ id: 's1', title: 'Reload', toolName: 'terminal_execute', sessionId: 'session-a', command: 'systemctl reload v2ray', args: { sessionId: 'session-a', command: 'systemctl reload v2ray' } }]),
+      steps: JSON.stringify([{ id: 's1', title: 'Reload', toolName: 'terminal_execute', sessionId: 'session-a', command: 'systemctl reload v2ray', reason: 'Reload the proxy', verification: 'The proxy reports healthy status', args: { sessionId: 'session-a', command: 'systemctl reload v2ray' } }]),
       proxyRisk: 'true',
     }) as { error: string };
 
@@ -969,6 +1004,8 @@ describe('capabilityTools submit_plan', () => {
         toolName: 'terminal_execute',
         sessionId: 'session-a',
         command: 'uptime',
+        reason: 'Check uptime',
+        verification: 'The command reports uptime',
         args: { sessionId: 'session-a', command: 'systemctl stop nginx' },
       }]),
     }) as { error: string };
@@ -991,7 +1028,9 @@ describe('capabilityTools submit_plan', () => {
         toolName: 'terminal_execute',
         sessionId: 'session-a',
         command: 'echo $(cat /etc/shadow)',
-        args: { sessionId: 'session-a', command: 'echo $(cat /etc/shadow)' },
+        reason: 'Inspect the host',
+        verification: 'No secret is returned',
+        args: { sessionId: 'session-a', command: 'echo $(cat /etc/shadow)' }
       }]),
     }) as { error: string };
 
@@ -1011,6 +1050,8 @@ describe('capabilityTools submit_plan', () => {
         id: 's1',
         title: 'Update notes',
         toolName: 'host_notes_set',
+        reason: 'Update the host record',
+        verification: 'The record is saved',
         args: { hostId: 'host-not-in-scope', notes: '<!-- netcatty:agent-record:start -->\nrole: web\n<!-- netcatty:agent-record:end -->' },
       }]),
     }) as { error: string };

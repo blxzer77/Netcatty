@@ -97,11 +97,12 @@ export const PlanApprovalCard: React.FC<{
                 </pre>
               ) : null}
               <div className="mt-1 space-y-0.5 text-muted-foreground leading-4">
-                {(step.toolName || step.sessionId || step.sessionIds?.length) ? (
+                {(step.toolName || step.sessionId || step.sessionIds?.length || typeof step.args?.hostId === 'string') ? (
                   <div>
                     {t('ai.plan.target')}: {step.toolName ?? '-'}
                     {step.sessionId ? ` @ ${step.sessionId}` : ''}
                     {step.sessionIds?.length ? ` @ [${step.sessionIds.join(', ')}]` : ''}
+                    {typeof step.args?.hostId === 'string' ? ` @ host:${step.args.hostId}` : ''}
                   </div>
                 ) : null}
                 {step.reason ? <div>{t('ai.plan.reason')}: {formatPlanText(step.reason)}</div> : null}

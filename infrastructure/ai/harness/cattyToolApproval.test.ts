@@ -44,7 +44,7 @@ describe('buildCattyToolApproval', () => {
     });
   });
 
-  it('auto-approves write tools in auto mode', async () => {
+  it('requires a plan before write tools in auto mode', async () => {
     const approval = buildCattyToolApproval({ permissionMode: 'auto', chatSessionId: 'chat-1' });
     const result = await approval({
       toolCall: {
@@ -53,7 +53,10 @@ describe('buildCattyToolApproval', () => {
         input: { path: '/tmp/x', content: 'hi' },
       },
     } as Parameters<typeof approval>[0]);
-    assert.equal(result, undefined);
+    assert.deepEqual(result, {
+      type: 'denied',
+      reason: 'Submit a plan before executing a Catty write in Auto mode.',
+    });
   });
 
   it('awaits user approval in confirm mode for write tools', async () => {
