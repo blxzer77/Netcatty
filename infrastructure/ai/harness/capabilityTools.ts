@@ -447,6 +447,7 @@ interface HostCommandDeps {
   toolOutputStore?: ToolOutputStore;
   toolResultDedup?: ToolResultDedup;
   abortSignal?: AbortSignal;
+  targetIdentities?: readonly ApprovedPlanTargetIdentity[];
 }
 
 /**
@@ -480,8 +481,9 @@ async function runSingleHostCommand(
     };
   }
 
-  const target = (typeof deps.context === 'function' ? deps.context() : deps.context).sessions
-    .find(session => session.sessionId === sessionId);
+  const target = ctx.targetIdentities?.find(identity => identity.sessionId === sessionId)
+    ?? (typeof deps.context === 'function' ? deps.context() : deps.context).sessions
+      .find(session => session.sessionId === sessionId);
   const result = await executeTerminalExecute(
     deps,
     { sessionId, command },
@@ -950,7 +952,18 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         signal: ctx.abortSignal,
         reserveSlot: (sessionId) => reserveSessionSlot(resolveHostWriteQueueKey(deps.context, sessionId)),
         runOnHost: (sessionId) => runSingleHostCommand(
-          { deps, chatSessionId, toolOutputStore, toolResultDedup, abortSignal: ctx.abortSignal },
+          {
+            deps,
+            chatSessionId,
+            toolOutputStore,
+            toolResultDedup,
+            abortSignal: ctx.abortSignal,
+            targetIdentities: getClaimedPlanTargetIdentities(
+              deps.chatSessionId,
+              spec.toolName,
+              args as Record<string, unknown>,
+            ),
+          },
           sessionId,
           command,
         ),
@@ -989,6 +1002,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         mode: batch.mode,
         hosts,
         summary: batch.summary,
+        ...(batch.summary.failed > 0 ? { error: 'One or more approved target hosts failed; the plan was stopped.' } : {}),
         ...(batch.stoppedEarly ? { stoppedEarly: true } : {}),
       };
     }
@@ -1275,6 +1289,7 @@ function createCatalogTool(spec: CattyToolSpec) {
               },
             );
             if (result.ok === false) {
+              failToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
               if (!result.data) return unwrap(result);
               const fittedFailure = {
                 error: fitLargeToolResultForModel({
@@ -1306,6 +1321,7 @@ function createCatalogTool(spec: CattyToolSpec) {
               toolOutputStore,
             });
             if (writeFingerprint) toolResultDedup?.rememberCompletedWrite(writeFingerprint, fitted);
+            commitToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
             return fitted;
           }
         }
@@ -1322,7 +1338,7 @@ function createCatalogTool(spec: CattyToolSpec) {
             abortSignal,
             selectedRunbook: toolContext.selectedRunbook,
           });
-          return fitCapabilityResultForModel(
+          const fittedLocal = fitCapabilityResultForModel(
             result,
             spec,
             deps.chatSessionId,
@@ -1330,6 +1346,24 @@ function createCatalogTool(spec: CattyToolSpec) {
             args as Record<string, unknown>,
             toolResultDedup,
           );
+          if (spec.policy.write && deps.chatSessionId) {
+            const failed = Boolean(
+              fittedLocal
+              && typeof fittedLocal === 'object'
+              && (
+                (fittedLocal as { ok?: unknown }).ok === false
+                || typeof (fittedLocal as { error?: unknown }).error === 'string'
+                || (spec.capabilityId === 'harness.terminal.batch'
+                  && Number((fittedLocal as { summary?: { failed?: unknown } }).summary?.failed ?? 0) > 0)
+              ),
+            );
+            if (failed) {
+              failToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
+            } else {
+              commitToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
+            }
+          }
+          return fittedLocal;
         }
 
         if (!spec.rpcMethod) {

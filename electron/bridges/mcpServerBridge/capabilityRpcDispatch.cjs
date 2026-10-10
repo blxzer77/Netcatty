@@ -178,7 +178,9 @@ function createCapabilityRpcDispatcher(deps) {
     }
     const trustedChatSessionId = typeof approvalContext.chatSessionId === "string"
       ? approvalContext.chatSessionId
-      : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
+      : surface === CAPABILITY_SURFACES.GLOBAL
+        ? undefined
+        : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
     const scopedParams = trustedChatSessionId
       ? { ...params, chatSessionId: trustedChatSessionId }
       : params;
@@ -312,6 +314,16 @@ function createCapabilityRpcDispatcher(deps) {
       && typeof trustedChatSessionId === "string"
       && typeof scopedParams?.ruleId === "string";
     const shouldTrackChatOperation = typeof trustedChatSessionId === "string";
+    if (shouldCancelPortForwardStart) {
+      const existing = await service.listTunnels?.();
+      if (!existing || existing.ok === false) {
+        return { ok: false, error: existing?.error || "Unable to verify existing port-forward tunnels before starting." };
+      }
+      const activeTunnels = Array.isArray(existing.tunnels) ? existing.tunnels : [];
+      if (activeTunnels.some(tunnel => tunnel?.ruleId === scopedParams.ruleId)) {
+        return { ok: false, error: "Port-forward rule already has an active tunnel; stop it explicitly before starting it again." };
+      }
+    }
     let operationPromise;
     const unregisterCancellation = shouldTrackChatOperation
       ? registerChatCancellation(trustedChatSessionId, async () => {
