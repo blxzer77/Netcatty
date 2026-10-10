@@ -2355,9 +2355,18 @@ async function applyChatSessionCancelled(chatSessionId, cancelled) {
     // Do not acknowledge cancellation until tracked SFTP operations and
     // capability-owned side effects have received and completed their
     // cancellation callbacks. The renderer uses this acknowledgement to keep
-    // its operation queue occupied.
-    await cancelSftpOpsForSession(chatSessionId);
-    await dispatchCapabilityRpc.cancelChatSessionOperations?.(chatSessionId);
+    // its operation queue occupied. Fan out both cancellation paths even when
+    // one native operation reports a failure, then surface the first failure.
+    const cancellationResults = await Promise.allSettled([
+      Promise.resolve().then(() => cancelSftpOpsForSession(chatSessionId)),
+      Promise.resolve().then(() => dispatchCapabilityRpc.cancelChatSessionOperations?.(chatSessionId)),
+    ]);
+    const cancellationFailure = cancellationResults.find(result => result.status === "rejected");
+    if (cancellationFailure) {
+      throw cancellationFailure.reason instanceof Error
+        ? cancellationFailure.reason
+        : new Error(String(cancellationFailure.reason));
+    }
   } else {
     setChatSessionCancelled(chatSessionId, false);
   }

@@ -5,6 +5,7 @@ import {
   clearApprovedPlans,
   commitToolCoveredByApprovedPlan,
   failToolCoveredByApprovedPlan,
+  hasUnsafePlanCommand,
   clearChatSessionPlans,
   isToolCoveredByApprovedPlan,
   onPlanCleared,
@@ -33,6 +34,20 @@ const chatSessionId = 'chat-1';
 describe('planGate', () => {
   beforeEach(() => {
     resetPlanGateForTests();
+  });
+
+  it('rejects indirect shell and interpreter execution in approved commands', () => {
+    for (const command of [
+      'bash /tmp/task.sh',
+      'python /tmp/task.py',
+      'perl -e system("id")',
+      'awk \'BEGIN { system("touch /tmp/x") }\'',
+      'printf x | xargs rm',
+      'find /tmp -exec rm {} \\',
+      'powershell -Command Get-Process',
+    ]) {
+      assert.equal(hasUnsafePlanCommand(command), true, command);
+    }
   });
 
   it('resolves approved and traces a proposed/resolved pair', async () => {

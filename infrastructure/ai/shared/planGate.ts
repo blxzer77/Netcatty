@@ -119,7 +119,7 @@ type PlanTraceEvent =
 const TRACE_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
 const TRACE_SECRET_PATTERN = /(?:^|[^A-Za-z0-9])(?:api[_-]?(?:key|token)|access[_-]?token|token|password|secret)\s*[:=]\s*[^\s,;]+/gi;
 const TRACE_SSH_PASSWORD_PATTERN = /(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi;
-const UNSAFE_PLAN_COMMAND_PATTERN = /(?:\$\(|`|\$\{|\beval\b|\b(?:sh|bash|zsh)\s+-c\b|\b(?:python(?:3)?|perl|ruby|node|php|lua)\s+-c\b|[\r\n;&|<>])/i;
+const UNSAFE_PLAN_COMMAND_PATTERN = /(?:\$\(|`|\$\{|\beval\b|\b(?:sh|bash|zsh|dash|ksh|fish)\b|\b(?:cmd(?:\.exe)?\s+\/c|powershell(?:\.exe)?\s+-(?:command|encodedcommand)|pwsh\s+-(?:command|encodedcommand))\b|\b(?:python(?:3)?|perl|ruby|node|php|lua)\b|\b(?:awk[^\r\n]*\bsystem\s*\(|xargs\b|find\b[^\r\n]*\s-exec\b|env\s+[^\r\n]*\s(?:sh|bash|python|perl|ruby|node)\b)|[\r\n;&|<>])/i;
 
 /** Approved plans never contain shell composition or dynamic code execution. */
 export function hasUnsafePlanCommand(command: string): boolean {

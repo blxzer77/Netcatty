@@ -37,7 +37,7 @@ import {
 } from './backupAccess';
 import { fitTerminalExecuteResultForModel } from './terminalCompression';
 import { fitLargeToolResultForModel } from './toolResultFitting';
-import { redactSecretsForModel } from './modelSecretRedaction';
+import { redactSecretsForModel, redactSecretsInValueForModel } from './modelSecretRedaction';
 import {
   globalTerminalMonitorGuard,
   isStreamingMonitorCommand,
@@ -114,30 +114,36 @@ async function invokeCapabilityRpc(
   if (abortSignal?.aborted) return { error: 'Capability call cancelled before it could start.' };
 
   let cancel: (() => void) | undefined;
-  const cancellation = abortSignal
-    ? new Promise<unknown>(resolve => {
+  const cancellation = abortSignal && chatSessionId && bridge.aiSetChatSessionCancelled
+    ? new Promise<{ cancelled: true; error: string }>(resolve => {
         cancel = () => {
           // The main process owns the active SFTP/tunnel/RPC operation. Do not
-          // resolve this tool until its cancellation fan-out acknowledges the
-          // request; a renderer-only Promise.race would release the queue while
-          // the side effect could still be running.
-          const acknowledgement = chatSessionId && bridge.aiSetChatSessionCancelled
-            ? bridge.aiSetChatSessionCancelled(chatSessionId, true)
-            : Promise.resolve({ ok: false, error: 'No main-process cancellation bridge is available.' });
-          void acknowledgement.then(result => {
-            resolve(result?.ok === false
-              ? { error: result.error || 'Capability cancellation was not acknowledged.' }
-              : { error: 'Capability call cancelled with the owning turn.' });
+          // release this tool's queue until the original request has settled,
+          // even when the cancellation acknowledgement reports failure.
+          void bridge.aiSetChatSessionCancelled!(chatSessionId, true).then(result => {
+            resolve({
+              cancelled: true,
+              error: result?.ok === false
+                ? result.error || 'Capability cancellation was not acknowledged.'
+                : 'Capability call cancelled with the owning turn.',
+            });
           }).catch(() => {
-            resolve({ error: 'Capability cancellation was not acknowledged.' });
+            resolve({ cancelled: true, error: 'Capability cancellation was not acknowledged.' });
           });
         };
         abortSignal.addEventListener('abort', cancel, { once: true });
       })
     : null;
   try {
-    const request = bridge.aiCapability(rpcMethod, params, chatSessionId);
+    const request = Promise.resolve(bridge.aiCapability(rpcMethod, params, chatSessionId));
     const result = await (cancellation ? Promise.race([request, cancellation]) : request);
+    if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) {
+      await request.catch(() => {});
+      return { error: result.error };
+    }
+    if (abortSignal?.aborted && !cancellation) {
+      return { error: 'Capability cancellation is unavailable; the operation was allowed to settle before releasing the queue.' };
+    }
     if (result && typeof result === 'object' && 'ok' in result && (result as { ok: boolean }).ok === false) {
       return { error: (result as { error?: string }).error || 'Capability call failed.' };
     }
@@ -901,12 +907,12 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       return {
         approved: true,
         planId: ctx.toolCallId,
-        steps: steps.map(step => ({
+        steps: redactSecretsInValueForModel(steps.map(step => ({
           id: step.id,
           title: step.title,
           ...(step.toolName ? { toolName: step.toolName } : {}),
           ...(step.args ? { args: step.args } : {}),
-        })),
+        }))) as PlanStep[],
         instruction: 'Plan approved. Execute the steps in order and verify each one before moving on. If reality diverges from the plan, stop and tell the user instead of continuing.',
       };
     }

@@ -7,6 +7,8 @@ const { createVaultService } = require("../../capabilities/services/vaultService
 const { createPortForwardService } = require("../../capabilities/services/portforwardService.cjs");
 const { createSessionService } = require("../../capabilities/services/sessionService.cjs");
 
+const CANCELLATION_SETTLEMENT_TIMEOUT_MS = 5000;
+
 const UNROUTED = Symbol("capability-rpc-unrouted");
 
 const SERVICE_BINDINGS = Object.freeze({
@@ -123,6 +125,21 @@ function createCapabilityRpcDispatcher(deps) {
     };
   };
 
+  const awaitOperationSettlement = async (operationPromise) => {
+    if (!operationPromise) return true;
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve(operationPromise).then(() => true, () => true),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), CANCELLATION_SETTLEMENT_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   const cancelChatSessionOperations = async (chatSessionId) => {
     const cancellations = activeChatCancellations.get(chatSessionId);
     if (!cancellations || cancellations.size === 0) return;
@@ -167,6 +184,7 @@ function createCapabilityRpcDispatcher(deps) {
       : params;
     if (
       capability.policy?.write
+      && !["session.close", "vault.host.delete"].includes(capability.id)
       && typeof scopedParams.sessionId === "string"
       && (
         typeof scopedParams.expectedHostId !== "string"
@@ -299,8 +317,9 @@ function createCapabilityRpcDispatcher(deps) {
       ? registerChatCancellation(trustedChatSessionId, async () => {
           // Do not acknowledge a generic capability cancellation while the
           // underlying handler is still running. Port-forward starts also need
-          // an explicit stop after a late tunnel creation completes.
-          await operationPromise?.catch(() => {});
+          // an explicit stop after a late tunnel creation completes. The
+          // deadline prevents a broken native handler from hanging the turn.
+          const settled = await awaitOperationSettlement(operationPromise);
           if (shouldCancelPortForwardStart && typeof invokeVaultAgent === "function") {
             const result = await invokeVaultAgent("portforward.stop", {
               ruleId: scopedParams.ruleId,
@@ -310,6 +329,9 @@ function createCapabilityRpcDispatcher(deps) {
             if (!result || result.ok === false) {
               throw new Error(result?.error || "Port-forward cancellation was not confirmed.");
             }
+          }
+          if (!settled) {
+            throw new Error("Capability cancellation timed out before the handler settled.");
           }
         })
       : () => {};
