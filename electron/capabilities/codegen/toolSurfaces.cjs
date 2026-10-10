@@ -104,6 +104,25 @@ const CATTY_CAPABILITY_DENYLIST = new Set([
   "session.get",
 ]);
 
+/**
+ * Toolset the sidebar agent (Catty, the server-management agent) is allowed to
+ * use. The capability catalog marks each server-ops entry with
+ * `agentToolsets: ["server-ops"]`; everything else — Vault inventory, snippets,
+ * scripts, port-forward rules, attachments — stays managed in the Netcatty UI
+ * and on MCP/CLI, and is no longer advertised to the sidebar agent.
+ *
+ * Failing closed is deliberate: a capability that forgets the annotation
+ * disappears from the sidebar instead of leaking a management tool into an ops
+ * turn. The golden list test in toolSurfaces.test.cjs keeps that loud.
+ */
+const SIDEBAR_AGENT_TOOLSETS = new Set(["server-ops"]);
+
+function hasSidebarToolset(capability) {
+  const toolsets = capability.agentToolsets;
+  if (!Array.isArray(toolsets)) return false;
+  return toolsets.some((name) => SIDEBAR_AGENT_TOOLSETS.has(name));
+}
+
 function isCattyOnlyCapability(capability) {
   return isAgentLocalOnlyCapability(capability, AGENT_KINDS.SIDEBAR);
 }
@@ -123,7 +142,13 @@ function isAgentLocalOnlyCapability(capability, agentKind) {
  * Resolve which agents may use a capability when agentKinds is not set explicitly.
  * - surfaces.globalAgent only → global agent
  * - surfaces.catty only (harness) → sidebar agent
- * - RPC/MCP-backed tools → both agents (shared infrastructure)
+ * - shared RPC/MCP infrastructure in the server-ops toolset → both agents
+ * - shared RPC/MCP infrastructure outside that toolset → global agent only
+ *
+ * The toolset question is deliberately asked after the shared-infrastructure
+ * one: a capability the sidebar agent does not use (Vault inventory, snippets,
+ * scripts, attachments) keeps its global-agent and MCP/CLI reach. Asking the
+ * toolset first would drop it from the global agent too.
  */
 function resolveAgentKinds(capability) {
   if (Array.isArray(capability.agentKinds) && capability.agentKinds.length > 0) {
@@ -135,8 +160,13 @@ function resolveAgentKinds(capability) {
   if (isAgentLocalOnlyCapability(capability, AGENT_KINDS.SIDEBAR)) {
     return [AGENT_KINDS.SIDEBAR];
   }
-  if (isAgentEligibleForKind(capability, AGENT_KINDS.SIDEBAR, { skipAgentKindCheck: true })) {
-    return [AGENT_KINDS.SIDEBAR, AGENT_KINDS.GLOBAL];
+  // Checked against the global agent on purpose: this is the shared
+  // infrastructure predicate (implemented, input fields, RPC or MCP surface)
+  // and must not consult the sidebar toolset.
+  if (isAgentEligibleForKind(capability, AGENT_KINDS.GLOBAL, { skipAgentKindCheck: true })) {
+    return hasSidebarToolset(capability)
+      ? [AGENT_KINDS.SIDEBAR, AGENT_KINDS.GLOBAL]
+      : [AGENT_KINDS.GLOBAL];
   }
   return [];
 }
@@ -149,6 +179,7 @@ function isAgentEligibleForKind(capability, agentKind, options = {}) {
   }
   const hasInputFields = Object.prototype.hasOwnProperty.call(TOOL_INPUT_FIELDS, capability.id);
   if (!hasInputFields) return false;
+  if (agentKind === AGENT_KINDS.SIDEBAR && !hasSidebarToolset(capability)) return false;
   if (isAgentLocalOnlyCapability(capability, agentKind)) return true;
   const hasBuiltinRpc = Boolean(capability.surfaces?.builtin?.rpcMethod);
   const hasGlobalRpc = Boolean(capability.surfaces?.global?.rpcMethod);
@@ -188,6 +219,7 @@ module.exports = {
   buildZodShape,
   buildToolDescription,
   CATTY_CAPABILITY_DENYLIST,
+  hasSidebarToolset,
   getAgentRpcMethod,
   getAgentToolName,
   getCattyToolName,

@@ -7,6 +7,10 @@ const META_CAPABILITIES = [
   {
     id: "session.environment",
     domain: "session",
+    // Server-ops toolset: the sidebar agent manages live servers, so the catalog
+    // marks which capabilities belong to that toolset. MCP, CLI, and the global
+    // agent are unaffected.
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "List scoped terminal sessions available to the agent.",
     policy: {

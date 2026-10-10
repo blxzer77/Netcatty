@@ -8,6 +8,7 @@ const HARNESS_CAPABILITIES = [
   {
     id: "harness.tool_output.read",
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Read stored tool output by handle id when a prior tool result was truncated.",
     policy: {
@@ -26,6 +27,7 @@ const HARNESS_CAPABILITIES = [
   {
     id: "harness.workspace.get_info",
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Get information about the current workspace, including all terminal sessions and their connection status.",
     policy: {
@@ -44,6 +46,7 @@ const HARNESS_CAPABILITIES = [
   {
     id: "harness.workspace.get_session_info",
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Get detailed information about a specific terminal or SFTP session.",
     policy: {
@@ -63,6 +66,7 @@ const HARNESS_CAPABILITIES = [
     id: "harness.terminal.read_context",
     agentKinds: ["sidebar"],
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Read a bounded slice of the current terminal screen or scrollback from the active AI scope.",
     policy: {
@@ -83,6 +87,7 @@ const HARNESS_CAPABILITIES = [
     id: "harness.plan.submit",
     agentKinds: ["sidebar"],
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Propose a plan of server operations for the user to approve before anything executes.",
     policy: {
@@ -101,6 +106,7 @@ const HARNESS_CAPABILITIES = [
   {
     id: "harness.web.search",
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Search the web for current information when configured in AI settings.",
     policy: {
@@ -119,6 +125,7 @@ const HARNESS_CAPABILITIES = [
   {
     id: "harness.url.fetch",
     domain: "harness",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Fetch and read the content of an HTTPS URL.",
     policy: {

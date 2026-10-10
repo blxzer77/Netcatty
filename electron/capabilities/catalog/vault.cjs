@@ -146,6 +146,7 @@ const VAULT_CAPABILITIES = [
   {
     id: "vault.host.notes.get",
     domain: "vault",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Read host metadata notes attached to a saved host (Host Details panel — not Vault sidebar Notes).",
     policy: {
@@ -166,6 +167,7 @@ const VAULT_CAPABILITIES = [
   {
     id: "vault.host.notes.set",
     domain: "vault",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Update host metadata notes on a saved host (Host Details panel — not Vault sidebar Notes).",
     policy: {

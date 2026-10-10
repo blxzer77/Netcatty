@@ -96,18 +96,14 @@ describe('capabilityTools result fitting', () => {
     );
   });
 
-  it('truncates large vault note content and stores the full note body behind a handle', async () => {
+  it('truncates large remote file content and stores the original behind a handle', async () => {
     const store = new ToolOutputStore();
     const body = `${'note line\n'.repeat(1000)}important ending`;
     const { tools, toolsContext } = createCattyToolsFromCatalog(
       {
         aiCapability: async () => ({
           ok: true,
-          note: {
-            id: 'note-1',
-            title: 'Long note',
-            content: body,
-          },
+          stat: { id: 'stat-1', readme: body },
         }),
       },
       { sessions: [] },
@@ -119,16 +115,16 @@ describe('capabilityTools result fitting', () => {
     );
 
     const result = await withCattyToolContext(
-      tools.vault_notes_get,
-      toolsContext.vault_notes_get,
+      tools.sftp_stat,
+      toolsContext.sftp_stat,
       'call-1',
     ).execute(
-      { noteId: 'note-1' },
-    ) as { note: { content: string } };
+      { sessionId: 'session-1', path: '/tmp/x' },
+    ) as { stat: { readme: string } };
 
-    assert.notEqual(result.note.content, body);
-    assert.match(result.note.content, /tool output handle/);
-    const handleId = result.note.content.match(/handleId=(tool-output-[^\]\s]+)/)?.[1];
+    assert.notEqual(result.stat.readme, body);
+    assert.match(result.stat.readme, /tool output handle/);
+    const handleId = result.stat.readme.match(/handleId=(tool-output-[^\]\s]+)/)?.[1];
     assert.ok(handleId);
     const recovered = store.readChunk({
       handleId,

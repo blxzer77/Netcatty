@@ -148,7 +148,7 @@ green; the plan document is the only thing that tracks the whole arc.
 - [x] Phase 1 事件协议与 planGate
 - [x] Phase 1 `submit_plan` 工具与提示词
 - [x] Phase 1 计划卡片 UI
-- [ ] Phase 2 工具面收敛
+- [x] Phase 2 工具面收敛
 - [ ] Phase 3 跨机协调与写锁
 - [ ] Phase 4 机器档案
 - [ ] Phase 5 巡检 skill/runbook、后备通道预检、收尾
