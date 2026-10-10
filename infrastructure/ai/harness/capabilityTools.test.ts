@@ -780,6 +780,32 @@ describe('capabilityTools submit_plan', () => {
 
     assert.match(result.error, /JSON array/);
   });
+  it('redacts secrets in host notes before they reach the model', async () => {
+    const { tools, toolsContext } = createCattyToolsFromCatalog(
+      {
+        aiExec: async () => ({ ok: true }),
+        aiCapability: async () => ({
+          ok: true,
+          hostId: 'host-1',
+          notes: 'deploy key API_TOKEN=tok_live_1234567890 kept for the backup job',
+        }),
+      },
+      { sessions: [] },
+      [],
+      'confirm',
+      undefined,
+      'chat-notes-redact',
+    );
+
+    const result = await withCattyToolContext(
+      tools.host_notes_get,
+      toolsContext.host_notes_get,
+      'notes-redact',
+    ).execute({ hostId: 'host-1' }) as { notes: string };
+
+    assert.match(result.notes, /deploy key/);
+    assert.doesNotMatch(result.notes, /tok_live_1234567890/);
+  });
 });
 
 describe('capabilityTools multi-host execution', () => {

@@ -7,7 +7,7 @@ import {
   findSafeChatMessageCompactionSplitIndex,
   resolveContextWindow,
 } from '../../contextCompaction';
-import { buildSystemPrompt } from '../../cattyAgent/systemPrompt';
+import { buildSystemPrompt, type SystemPromptContext } from '../../cattyAgent/systemPrompt';
 import {
   isWebSearchReady,
   normalizeCommandTimeoutSeconds,
@@ -32,6 +32,7 @@ import {
 import { computeTotalInputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../contextBudget';
 import { clearChatSessionCancelled } from '../agentStop';
 import { clearApprovedPlans } from '../../shared/planGate';
+import { collectMachineRecordSummaries } from '../machineRecord';
 import { isRequestTooLargeError } from '../../errorClassifier';
 import { getNetcattyBridge, generateId, resolveUserSkillsContext } from '../../aiChatStreamingSupport';
 import {
@@ -171,10 +172,46 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
   );
   const { tools } = toolsBundle;
 
+  // Machine records: one bounded line per host, so the agent starts a new
+  // session already knowing what each machine is and what it did last. Only the
+  // agent's own notes block is summarized — the user's prose never enters the
+  // prompt. A host whose notes cannot be read is simply described without one.
+  const machineRecords = await collectMachineRecordSummaries({
+    hosts: context.terminalSessions.map(session => ({
+      sessionId: session.sessionId,
+      hostId: session.hostId,
+    })),
+    readNotes: async (hostId) => {
+      const result = await netcattyBridge.aiCapability?.('vault/host/notes/get', { hostId }, sessionId);
+      if (!result || typeof result !== 'object' || 'error' in result) return null;
+      const notes = (result as { notes?: unknown }).notes;
+      return typeof notes === 'string' ? notes : null;
+    },
+  });
+
+  const systemPromptHosts: SystemPromptContext['hosts'] = context.terminalSessions.map((session) => {
+    const record = session.hostId ? machineRecords.get(session.hostId) : undefined;
+    return {
+      sessionId: session.sessionId,
+      hostId: session.hostId,
+      hostname: session.hostname,
+      label: session.label,
+      os: session.os,
+      username: session.username,
+      protocol: session.protocol,
+      shellType: session.shellType,
+      deviceType: session.deviceType,
+      connected: session.connected,
+      ...(session.hostChain ? { hostChain: session.hostChain } : {}),
+      ...(session.activePortForwards ? { activePortForwards: session.activePortForwards } : {}),
+      ...(record ? { machineRecord: record } : {}),
+    };
+  });
+
   const systemPrompt = buildSystemPrompt({
     scopeType: context.scopeType,
     scopeLabel: context.scopeLabel,
-    hosts: context.terminalSessions,
+    hosts: systemPromptHosts,
     permissionMode: context.globalPermissionMode,
     webSearchEnabled: isWebSearchReady(context.webSearchConfig),
     userSkillsContext,

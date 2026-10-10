@@ -12,7 +12,7 @@ export interface SystemPromptContext {
     shellType?: string;
     deviceType?: string;
     connected: boolean;
-    hostChain?: Array<{ hostId: string; label?: string; hostname: string }>;
+    hostChain?: Array<{ hostId: string; label?: string; hostname?: string }>;
     activePortForwards?: Array<{
       ruleId: string;
       label?: string;
@@ -20,6 +20,11 @@ export interface SystemPromptContext {
       localPort?: number;
       status?: string;
     }>;
+    /**
+     * One-line machine record from the host's notes, when it has one. Kept to a
+     * summary so the user's prose never enters the prompt.
+     */
+    machineRecord?: string;
   }>;
   permissionMode: 'observer' | 'confirm' | 'auto';
   webSearchEnabled?: boolean;
@@ -86,7 +91,16 @@ If a check cannot pass, do not submit the plan. Say which one failed and what wo
 8. **Use the specific tool** when one exists (SFTP for files, port-forward tunnels for reachability) instead of shell workarounds.
 9. **Explain before acting**, briefly. Say what a command does and why before it runs.
 10. **Big output is archived, not lost.** When a result is truncated you get a handle: use \`tool_output_read\` to search or page through the original instead of guessing at what was cut.
-11. **Keep the machine record current.** Read the host's notes before working on it, and update them afterwards with what changed and what to watch. Never put credentials or secrets in notes.
+11. **Keep the machine record current.** Before working on a host, read its notes with \`host_notes_get\`. Afterwards, update the record block with \`host_notes_set\` — write it as:
+
+    <!-- netcatty:agent-record:start -->
+    role: <what this host is for>
+    updated: <UTC timestamp>
+    last-action: <what you just did, one line>
+    watch: <one risk or follow-up per line, optional>
+    <!-- netcatty:agent-record:end -->
+
+    Preserve every other line of the notes: the user's prose is data, and keys you do not recognise stay as they are. Never put credentials or secrets in notes.
 
 ## Answering
 Lead with the conclusion, then the evidence: the command you ran and the lines that prove it. Keep it short — one paragraph plus the key output beats a transcript. If you do not know, say so and name the check that would settle it.
@@ -176,6 +190,7 @@ function buildHostList(
       host.deviceType ? `deviceType: ${host.deviceType}` : null,
       hostChain ? `hostChain: ${hostChain}` : null,
       portForwards ? `portForwards: ${portForwards}` : null,
+      host.machineRecord ? `record: ${host.machineRecord}` : null,
       `status: ${status}`,
     ]
       .filter(Boolean)

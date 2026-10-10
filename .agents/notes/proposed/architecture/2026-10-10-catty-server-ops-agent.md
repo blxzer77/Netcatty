@@ -99,7 +99,10 @@ outputs.
 
 **6. Memory.** Machine state, prior actions, and conclusions live in vault host notes,
 written by the agent and editable by the user; secrets are redacted before anything
-reaches the model.
+reaches the model. The agent owns one marked block inside the notes and touches nothing
+outside it, so the user's prose survives every write and unknown keys are carried over.
+The system prompt carries only a one-line summary per host — never the notes themselves.
+See `infrastructure/ai/harness/machineRecord.ts`.
 
 ## Alternatives considered
 
@@ -138,7 +141,8 @@ and does not want to operate the machine by hand.
   results and survives single-host failures; a comparison returns a deterministic
   agree/differ conclusion with the differing lines, not N full outputs.
 - Machine state and prior actions are readable in a new chat session and editable by the
-  user in host notes; secrets never reach the model.
+  user in host notes; secrets never reach the model; the agent's block is the only part of
+  the notes it writes, and unknown keys survive a partial write.
 - A fixed smoke set passes: single-host diagnosis, a change with verification, an
   inspection skill run, a transport task, and a cross-machine consistency comparison.
 - No background or scheduled execution exists: no resident process, no timer trigger.
