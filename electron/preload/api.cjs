@@ -1855,8 +1855,8 @@ function createPreloadApi(ctx) {
   aiAllowlistAddHost: async (baseURL) => {
     return ipcRenderer.invoke("netcatty:ai:allowlist:add-host", { baseURL });
   },
-  aiExec: async (sessionId, command, chatSessionId) => {
-    return ipcRenderer.invoke("netcatty:ai:exec", { sessionId, command, chatSessionId });
+  aiExec: async (sessionId, command, chatSessionId, expectedTarget) => {
+    return ipcRenderer.invoke("netcatty:ai:exec", { sessionId, command, chatSessionId, expectedTarget });
   },
   aiCattyCancelExec: async (chatSessionId) => {
     return ipcRenderer.invoke("netcatty:ai:catty:cancel", { chatSessionId });

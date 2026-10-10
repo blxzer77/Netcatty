@@ -193,6 +193,15 @@ function createCapabilityRpcDispatcher(deps) {
         hostname: host?.hostname || "",
       };
     }
+    if (scopedParams.expectedHostId && scopedParams.sessionId) {
+      const meta = typeof getSessionMeta === "function"
+        ? getSessionMeta(scopedParams.sessionId, trustedChatSessionId)
+        : null;
+      if (!meta || meta.connected !== true || (meta.hostId || meta.savedHostId) !== scopedParams.expectedHostId) {
+        return { ok: false, error: "Execution target host identity changed; submit a new plan." };
+      }
+    }
+
     if (
       typeof trustedChatSessionId === "string"
       && ["vault.host.notes.get", "vault.host.notes.set", "portforward.start", "portforward.stop"].includes(capability.id)

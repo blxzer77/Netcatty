@@ -21,6 +21,7 @@ export interface NetcattyBridge {
     sessionId: string,
     command: string,
     chatSessionId?: string,
+    expectedTarget?: { hostId?: string; hostname?: string; protocol?: string },
   ): Promise<{
     ok: boolean;
     stdout?: string;

@@ -466,10 +466,19 @@ async function runSingleHostCommand(
     };
   }
 
+  const target = (typeof deps.context === 'function' ? deps.context() : deps.context).sessions
+    .find(session => session.sessionId === sessionId);
   const result = await executeTerminalExecute(
     deps,
     { sessionId, command },
-    { abortSignal },
+    {
+      abortSignal,
+      expectedTarget: target ? {
+        hostId: target.hostId,
+        hostname: target.hostname,
+        protocol: target.protocol,
+      } : undefined,
+    },
   );
   const data = result.data ?? { stdout: '', stderr: '', exitCode: null };
   const fitted = fitTerminalExecuteResultForModel(
@@ -1233,10 +1242,19 @@ function createCatalogTool(spec: CattyToolSpec) {
             };
           }
           {
+            const target = (typeof deps.context === 'function' ? deps.context() : deps.context).sessions
+              .find(session => session.sessionId === sid);
             const result = await executeTerminalExecute(
               deps,
               { sessionId: sid, command },
-              { abortSignal },
+              {
+                abortSignal,
+                expectedTarget: target ? {
+                  hostId: target.hostId,
+                  hostname: target.hostname,
+                  protocol: target.protocol,
+                } : undefined,
+              },
             );
             if (result.ok === false) {
               if (!result.data) return unwrap(result);
@@ -1321,6 +1339,18 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
 
         let rpcParams = args as Record<string, unknown>;
+        const rpcContext = typeof deps.context === 'function' ? deps.context() : deps.context;
+        const rpcTarget = typeof rpcParams.sessionId === 'string'
+          ? rpcContext.sessions.find(session => session.sessionId === rpcParams.sessionId)
+          : undefined;
+        if (rpcTarget?.hostId) {
+          rpcParams = {
+            ...rpcParams,
+            expectedHostId: rpcTarget.hostId,
+            ...(rpcTarget.hostname ? { expectedHostname: rpcTarget.hostname } : {}),
+            ...(rpcTarget.protocol ? { expectedProtocol: rpcTarget.protocol } : {}),
+          };
+        }
         const directTargetError = validateDirectScopedHostCapability(
           spec.capabilityId,
           rpcParams,

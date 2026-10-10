@@ -2055,6 +2055,26 @@ async function dispatch(method, params, approvalContext = {}) {
   const sessionWriteLockId = (capability?.id === "terminal.execute" || capability?.id === "terminal.start")
     ? params?.sessionId
     : null;
+  if (params?.expectedHostId && params?.sessionId) {
+    const liveSession = sessions?.get(params.sessionId);
+    if (!liveSession || liveSession.hostId !== params.expectedHostId) {
+      return { ok: false, error: "Execution target host identity changed; submit a new plan." };
+    }
+    if (
+      params.expectedHostname
+      && liveSession.hostname
+      && String(liveSession.hostname).trim().toLowerCase() !== String(params.expectedHostname).trim().toLowerCase()
+    ) {
+      return { ok: false, error: "Execution target hostname changed; submit a new plan." };
+    }
+    if (
+      params.expectedProtocol
+      && liveSession.protocol
+      && String(liveSession.protocol).toLowerCase() !== String(params.expectedProtocol).toLowerCase()
+    ) {
+      return { ok: false, error: "Execution target protocol changed; submit a new plan." };
+    }
+  }
   pruneCompletedBackgroundJobs();
 
   const approvalTarget = getApprovalTarget(params);

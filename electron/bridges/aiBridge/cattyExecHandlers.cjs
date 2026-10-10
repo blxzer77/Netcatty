@@ -17,6 +17,24 @@ function isNetworkDeviceLike(meta) {
   return (meta?.deviceType === "network" && isSshOrSerial) || protocol === "serial";
 }
 
+function targetIdentityError(actual, expected) {
+  if (!expected || typeof expected !== "object") return null;
+  if (typeof expected.hostId === "string" && expected.hostId && actual?.hostId !== expected.hostId) {
+    return "Execution target host identity changed; submit a new plan.";
+  }
+  if (typeof expected.hostname === "string" && expected.hostname
+    && typeof actual?.hostname === "string"
+    && actual.hostname.trim().toLowerCase() !== expected.hostname.trim().toLowerCase()) {
+    return "Execution target hostname changed; submit a new plan.";
+  }
+  if (typeof expected.protocol === "string" && expected.protocol
+    && typeof actual?.protocol === "string"
+    && actual.protocol.toLowerCase() !== expected.protocol.toLowerCase()) {
+    return "Execution target protocol changed; submit a new plan.";
+  }
+  return null;
+}
+
 async function proxyCattyExecToWorker({
   event,
   terminalWorkerManager,
@@ -24,6 +42,7 @@ async function proxyCattyExecToWorker({
   sessionId,
   command,
   chatSessionId,
+  expectedTarget,
 }) {
   if (!terminalWorkerManager?.request) {
     return { ok: false, error: "Session not found" };
@@ -33,6 +52,8 @@ async function proxyCattyExecToWorker({
   if (busyErr) return busyErr;
 
   const meta = getWorkerExecutionMeta(mcpServerBridge, sessionId, chatSessionId);
+  const targetError = targetIdentityError(meta, expectedTarget);
+  if (targetError) return { ok: false, error: targetError };
   if (!isNetworkDeviceLike(meta)) {
     // No live session here: settings additions plus common defaults only; the
     // terminal worker re-runs the shell-selected defaults on the live session.
@@ -60,6 +81,7 @@ async function proxyCattyExecToWorker({
       chatSessionId,
       commandTimeoutMs: mcpServerBridge.getCommandTimeoutMs ? mcpServerBridge.getCommandTimeoutMs() : 60000,
       sessionMeta: meta,
+      expectedTarget,
       commandBlocklist: mcpServerBridge.getCommandBlocklist?.(),
     }, {
       webContentsId: event?.sender?.id,
@@ -73,7 +95,7 @@ async function proxyCattyExecToWorker({
 
 function registerCattyExecHandlers(ctx) {
   with (ctx) {
-  ipcMain.handle("netcatty:ai:exec", async (event, { sessionId, command, chatSessionId }) => {
+  ipcMain.handle("netcatty:ai:exec", async (event, { sessionId, command, chatSessionId, expectedTarget }) => {
     // Validate IPC sender (Issue #17)
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
@@ -91,8 +113,17 @@ function registerCattyExecHandlers(ctx) {
         sessionId,
         command,
         chatSessionId,
+        expectedTarget,
       });
     }
+    const meta = mcpServerBridge.getSessionMeta(sessionId, chatSessionId) || {};
+    const targetError = targetIdentityError({
+      ...meta,
+      ...session,
+      protocol: session.protocol || session.type || meta.protocol,
+      hostname: session.hostname || meta.hostname,
+    }, expectedTarget);
+    if (targetError) return { ok: false, error: targetError };
 
     // Honor the per-session execution lock so this IPC path does not race with
     // long-running background jobs started via terminal_start.
@@ -111,7 +142,6 @@ function registerCattyExecHandlers(ctx) {
     // Mosh sessions use a shell-backed PTY, so network device mode only applies to SSH/serial.
     // Prefer session.protocol (runtime truth) over meta.protocol (renderer hint)
     // because Mosh tabs report as protocol:"ssh" in metadata but "mosh" in session.
-    const meta = mcpServerBridge.getSessionMeta(sessionId, chatSessionId) || {};
     const sessionProtocol = session.protocol || session.type || meta.protocol || "";
     const isSshOrSerial = sessionProtocol === "ssh" || sessionProtocol === "serial";
     const isNetworkDevice = (meta.deviceType === "network" && isSshOrSerial) || sessionProtocol === "serial";

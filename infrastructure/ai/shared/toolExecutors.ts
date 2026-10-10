@@ -66,7 +66,10 @@ function isObserver(mode: AIPermissionMode): boolean {
 export async function executeTerminalExecute(
   deps: ToolDeps,
   args: { sessionId: string; command: string },
-  options: { abortSignal?: AbortSignal } = {},
+  options: {
+    abortSignal?: AbortSignal;
+    expectedTarget?: { hostId?: string; hostname?: string; protocol?: string };
+  } = {},
 ): Promise<ToolExecResult<{ stdout: string; stderr: string; exitCode: number | null }>> {
   const { bridge, context, commandBlocklist, permissionMode } = deps;
   const { sessionId, command } = args;
@@ -113,7 +116,7 @@ export async function executeTerminalExecute(
   abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
   let result: Awaited<ReturnType<NetcattyBridge['aiExec']>>;
   try {
-    result = await bridge.aiExec(sessionId, command, deps.chatSessionId);
+    result = await bridge.aiExec(sessionId, command, deps.chatSessionId, options.expectedTarget);
   } finally {
     abortSignal?.removeEventListener('abort', cancelOnAbort);
     await cancellationAcknowledgement?.catch(() => {});
