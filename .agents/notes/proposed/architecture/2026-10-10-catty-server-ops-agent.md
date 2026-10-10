@@ -1,110 +1,146 @@
-# Agent Note: Catty is the server-operations agent
+# Agent Note: Catty is the personal server-management agent
 Status: proposed
 
 ## Problem
 
-Catty is the fork's built-in agent: `CattyTurnDriver` runs a Vercel AI SDK `streamText`
-loop (`infrastructure/ai/harness/turnDrivers/cattyStreamProcessor.ts`) over the catalog
-tool surface, and its always-on system prompt comes from
-`infrastructure/ai/cattyAgent/systemPrompt.ts`. Today both present Catty as a general
-Netcatty automation assistant rather than a server-operations agent.
+Catty is the fork's built-in agent, but its role was never defined from the user's
+workload. It presents itself as a general Netcatty automation assistant: the always-on
+Guidelines block leads with Vault inventory work, and the sidebar exposes all 73 catalog
+tools. The owner of this fork runs a handful of fixed private servers — proxies plus
+self-hosted services — and wants the agent to do the operating work for them.
 
-Two consequences follow:
+The requirement is a **server-management agent that runs inside Netcatty, not an agent
+that runs on the server**: no remote daemon, no scheduled background run, no unattended
+maintenance. Everything happens interactively, through the sessions the user already has
+open, under approval.
 
-1. The role is ambiguous. The Guidelines block leads with Vault inventory work
-   (`vault_hosts_create`, `vault_hosts_import`, `vault_notes_*`) and keeps snippets,
-   scripts, and host-notes guidance in the always-on prefix, so every ordinary ops turn
-   pays prompt budget and attention for capabilities it will not use.
-2. Scope is not explicit anywhere. The sidebar tool surface exposes all 73 catalog tools
-   at once (`cattyToolSpecs.json`), so neither the model nor the user reviewing an
-   approval prompt has a crisp notion of what this agent is for, and which writes deserve
-   confirmation.
+Concrete requirements collected from the user:
 
-The fork wants Catty to be the agent you point at live sessions to diagnose, change, and
-automate remote hosts.
+- **Scope**: a fixed small set of personal machines (not a fleet), reachable through
+  Netcatty connections; proxies and self-hosted services are the workloads that matter.
+- **Tasks**: diagnosis, change and maintenance, inspection with reporting, file and
+  config transport between machines, and cross-machine consistency comparison.
+- **Autonomy**: goal-driven. The agent plans, the user approves the plan once, the agent
+  executes. It stops and asks when reality diverges from the plan.
+- **Approval**: nothing is categorically forbidden, but everything needs review. The unit
+  of approval is the plan (a step list with a single approve action), not the individual
+  command.
+- **Red line**: the proxy path is the user's own ingress/egress. Before any change that
+  could break it, the agent must establish a backup access path: confirm another live
+  connection to the host exists, verify an alternate route is actually reachable, back up
+  the current configuration, and state the recovery steps in the plan it asks the user to
+  approve.
+- **Delivery**: a conclusion plus the evidence behind it, not a transcript.
+- **Memory**: machine state and prior actions survive across chat sessions, stored in
+  editable vault host notes.
+- **Inspection**: delivered as a skill plus runbook the user invokes — no cron, no
+  background loop.
 
 ## Proposal
 
-Make "server operations" the explicit scope of Catty in the three places that define an
-agent, and keep the capability catalog as the single source of truth for all three.
+Reposition Catty as the personal server-management agent and make that scope explicit in
+prompt, tool surface, approval, and memory. The runtime stays where it is: the agent
+operates the client's live sessions and nothing more.
 
-**1. Prompt.** Rewrite `buildSystemPrompt` around one purpose: operating live terminal
-sessions and the servers behind them (diagnosis, change, verification, automation). Drop
-the always-on Vault/notes/snippets tutorials from the Guidelines block; state the
-management tools only where a section is gated by whether those tools are in the current
-tool set. Keep the existing invariant that the static, cacheable prefix stays stable
-across turns and that dynamic sections (scope, sessions, permission mode, skills) are
-appended after it.
+**1. Prompt.** Rewrite `buildSystemPrompt` around one purpose — managing a small fixed set
+of servers through their live sessions — with diagnosis, change, verification, inspection
+and transport as the named task classes. Keep the existing cacheable-prefix invariant
+(static guidelines first, dynamic scope/sessions/permission/skills after).
 
-**2. Tool surface.** Classify the catalog by role instead of exposing everything:
+**2. Tool surface.** Classify the catalog by role:
 
-- Core ops: `session.environment`, `terminal.*`, `session.close`, `sftp.*`, the
-  port-forwarding tunnel actions, `attachment.*`, `harness.tool_output.read`,
-  `harness.url.fetch`, `harness.web.search`, `harness.workspace.*`.
-- Inventory and knowledge management: `vault.host*`, `vault.group*`, `vault.note*`,
-  `vault.identity.list`, `vault.proxyProfile.list`, host connect scripts, `snippets.*`,
-  `scripts.*` (including rule CRUD under `portforward.rules.*`).
+- *Perceive* (read-only): `session.environment`, `terminal.*`, `harness.terminal.read_context`,
+  `sftp.list`, `sftp.read_file`, `portforward.tunnels.list`.
+- *Change* (write): `terminal.execute`, `terminal.start`, `terminal.poll`, `terminal.stop`,
+  `sftp.upload`, `sftp.write_file`, `sftp.mkdir`, `sftp.rename`, `sftp.delete`, `sftp.chmod`.
+- *Coordinate* (new): batched execution across several sessions with per-host results and
+  failure isolation, plus a structured consistency comparison across machines.
+- *Machine record* (new, narrow): read and update host notes so the agent's cross-session
+  memory lives in an editable place the user owns.
+- *Everything else* (`vault.*` CRUD, snippets, scripts, groups, identities, proxy profiles,
+  port-forward rule CRUD, attachments) leaves the sidebar agent and stays managed through
+  the Netcatty UI and CLI.
 
-Exposure is decided in `electron/capabilities/catalog/` through the existing
-`surfaces` / `agentKinds` mechanism and the generated specs, not by ad-hoc filtering in
-the renderer. Inventory tools stay implemented and keep their MCP and CLI surfaces; the
-question this note decides is only what the sidebar agent advertises by default.
+Exposure is decided in `electron/capabilities/catalog/` via `surfaces` / `agentKinds` and
+the generated specs, never by filtering in the renderer. MCP and CLI contracts must not
+change.
 
-**3. Capabilities.** Run an inventory pass against real ops tasks and add the missing ones
-(for example service/unit state, disk and network diagnosis, log retrieval, batch
-execution across several sessions) as catalog entries first, then regenerate with
-`npm run generate:capability-tools`. No tool may be added to the sidebar by editing
-generated JSON.
+**3. Plan, approve, execute.** Replace per-tool-call approval as the primary flow with a
+plan artifact: the agent emits a numbered plan (command, target host, reason, expected
+verification), the user approves once, execution proceeds serially per host, and any
+divergence stops the run and asks. Keep per-call approval as the fallback for ad-hoc
+single commands, and keep Observer strictly read-only.
 
-**4. Approval.** Keep Observer strictly read-only. For Confirm mode, state the write
-classes once in the prompt in operational terms (command execution, file writes and
-transfers, tunnel start, session close) so the user's approval decisions match the
-agent's stated scope.
+**4. Backup-access precondition.** A required preflight before any action that can break
+the proxy path: verify a second live connection to the target host, test an alternate
+route for reachability, back up the affected configuration, and include the recovery
+procedure in the plan. The plan must show the result of each check.
+
+**5. Coordination.** Serialize writes to the same host across every chat session, not just
+within one (today's queue key is `chatSessionId:sessionId`, which leaves two sessions
+racing on the same machine). Batch runs report per-host outcomes and a summary; a failure
+on one host must not stop or corrupt the others.
+
+**6. Memory.** Machine state, prior actions, and conclusions live in vault host notes,
+written by the agent and editable by the user; secrets are redacted before anything
+reaches the model.
 
 ## Alternatives considered
 
-**Keep Catty general and split server ops into a second agent.** This adds a second
-in-tree streaming agent with its own prompt, tool surface, approval policy, and tests,
-while the fork already commits to exactly Catty and Pi as supported agents
-(`2026-10-10-pi-catty-agent-boundary`). Rejected unless Catty and an ops agent genuinely
-need different runtimes rather than different scope.
+**An agent that runs on the server.** Rejected by the user: no remote deployment, no
+daemon, no unattended maintenance. The agent's hands are the user's existing sessions.
 
-**Only rewrite the prompt.** Cheapest change, but the tool surface is what drives tool
-selection, approval review, and per-turn token cost, so the role would stay ambiguous.
+**A resident, scheduled inspection agent.** Also rejected: no background loop and no
+timer. Inspection is a skill plus runbook the user invokes.
 
-**Hide tools in the renderer.** Leaves the catalog, MCP, and CLI views disagreeing about
-what Catty can do, and reintroduces a second source of truth for exposure.
+**Keep the full Vault management surface in the agent.** Conflicts with the goal — the
+agent should manage servers, not manage Netcatty's inventory. Host notes are the single
+exception, because they are where the machine record lives.
 
-**Keep every tool because tokens are cheap.** A 73-tool surface with overlapping
-inventory and ops actions measurably widens tool choice and dilutes the prompt; the cost
-is not only tokens.
+**Rewrite the runtime and event protocol.** Unnecessary. `AgentRuntime`, trace, compaction,
+output store, and the session queue are production-quality; the gap is the agent
+definition, so the work is prompt, tool exposure, approval unit, and coordination.
+
+**Per-command approval only.** Safe, but the user explicitly asked for plan-level approval
+and does not want to operate the machine by hand.
 
 ## Acceptance criteria
 
-- `buildSystemPrompt` states the server-operations purpose first, and its static prefix
-  stays byte-stable across turns for the same configuration (existing prompt-structure
-  test keeps passing).
-- The sidebar tool set is derived from the catalog, and the CI drift check stays clean:
-  `npm run generate:capability-tools` followed by
-  `git diff --exit-code infrastructure/ai/harness/generated/cattyToolSpecs.json` produces
-  no diff.
-- MCP (`netcatty-mcp-server`) and CLI tool lists are unchanged except where a catalog
-  entry deliberately changes, and their tests pass.
-- Approval behavior is unchanged for existing write classes: Observer denies writes,
-  Confirm asks per `policy.write && !policy.bypassesApproval`, Auto runs them.
-- A fixed set of ops smoke tasks (single-host diagnostics, file read/write, long-running
-  job, multi-session fan-out) completes without reaching for management tools.
+- The prompt states the server-management purpose first; the static prefix stays stable
+  across turns for the same configuration.
+- The sidebar tool set is derived from the catalog and contains no Vault CRUD beyond host
+  notes; `npm run generate:capability-tools` plus
+  `git diff --exit-code infrastructure/ai/harness/generated/cattyToolSpecs.json` is clean.
+- A plan can be approved once and then executed; execution stops on divergence and asks;
+  Observer mode still denies every write; every action is recorded in the trace.
+- The backup-access precondition runs before proxy-affecting actions, is visible in the
+  plan, and blocks the action when it fails.
+- Writes to the same host serialize across chat sessions; a batched run reports per-host
+  results and survives single-host failures.
+- Machine state and prior actions are readable in a new chat session and editable by the
+  user in host notes; secrets never reach the model.
+- A fixed smoke set passes: single-host diagnosis, a change with verification, an
+  inspection skill run, a transport task, and a cross-machine consistency comparison.
+- No background or scheduled execution exists: no resident process, no timer trigger.
 
 ## Risks
 
-- The catalog is shared by the sidebar agent, the global agent, MCP, and the CLI.
-  Pruning sidebar exposure must not silently change those contracts; each surface removal
-  needs the corresponding test updated in the same change.
-- Users who currently drive Vault inventory work through Catty lose the obvious path; the
-  replacement must be a documented, discoverable way to reach those tools rather than a
-  hidden one.
-- Prompt restructuring can break provider prompt caching if static and dynamic sections
-  get reordered; the cacheable-prefix invariant must survive the rewrite.
-- Tool-count shrinkage can hide a capability the model previously used to self-correct
-  (for example `tool_output_read` for truncated results); the keep-list has to be derived
-  from ops transcripts, not from intuition.
+- **Plan approval is a new surface.** It needs an event, a rendering, continuation, and
+  stop semantics that fit the existing `AgentEvent` protocol and the compact activity
+  view. Per-tool approval must keep working for ad-hoc commands.
+- **The precondition can block legitimate work.** A user with only one connection to a
+  host needs an explicit, honest "continue anyway" path that records the risk.
+- **Host notes become a schema.** They carry machine records written by the agent and
+  edited by the user, so format, redaction, and concurrent edits need a decision.
+- **Cost control is still on us.** A smaller tool set is the main lever on the per-turn
+  prompt cost; the plan artifact itself adds tokens and must stay terse.
+- **Do not over-build for a fleet.** The target is a handful of machines. Batch execution
+  and comparison must not grow a cluster abstraction that this user does not need.
+
+## Open questions
+
+- Exact agent-facing shape of host notes (structured record vs. free markdown with a
+  fixed header block).
+- Which capabilities count as "proxy-affecting" for the precondition (proxy service
+  commands, firewall rules, `portforward_start`, routing changes).
+- Whether the plan artifact is persisted for audit, and for how long.
