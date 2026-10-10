@@ -506,14 +506,14 @@ async function runSingleHostCommand(
       ? fitted
       : {
           ...fitted,
-          error: result.error || 'Terminal command failed before completion.',
+          error: (result as { error?: string }).error || 'Terminal command failed before completion.',
         };
     toolResultDedup?.rememberCompletedWrite(fingerprint, replayable);
   }
   return {
     sessionId,
     ok: result.ok,
-    ...(result.ok === false ? { error: result.error } : {}),
+    ...(result.ok === false ? { error: (result as { error?: string }).error } : {}),
     exitCode: fitted.exitCode,
     stdout: fitted.stdout,
     stderr: fitted.stderr,
@@ -1686,7 +1686,7 @@ export function createCattyToolsFromCatalog(
     if (rawSpec.capabilityId === 'harness.web.search' && !isWebSearchReady(webSearchConfig)) {
       continue;
     }
-    catalogTools[rawSpec.toolName] = createCatalogTool(rawSpec);
+    catalogTools[rawSpec.toolName] = createCatalogTool(rawSpec) as unknown as ReturnType<typeof tool>;
     toolsContext[rawSpec.toolName] = sharedContext;
   }
 
