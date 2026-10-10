@@ -17,6 +17,7 @@ import {
 import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutionQueue';
 import {
   commitToolCoveredByApprovedPlan,
+  failToolCoveredByApprovedPlan,
   hasUnsafePlanCommand,
   proposePlan,
   type PlanDecision,
@@ -520,14 +521,12 @@ function runbookTargetMismatch(
       session.hostname,
       session.label,
     ].some(value => value?.toLowerCase() === selector.toLowerCase()));
-    const hostIds = new Set(matches.map(session => session.hostId).filter((id): id is string => Boolean(id)));
-    if (matches.length === 0 || hostIds.size !== 1) {
-      return `Runbook target "${selector}" is not an exact, unique connected host in the current scope.`;
+    if (matches.length !== 1 || !matches[0].hostId) {
+      return `Runbook target "${selector}" must identify exactly one connected session, not only a shared host.`;
     }
-    for (const hostId of hostIds) expectedHostIds.add(hostId);
-    for (const match of matches) {
-      if (match.sessionId.toLowerCase() === selector.toLowerCase()) expectedSessionIds.add(match.sessionId);
-    }
+    const match = matches[0];
+    expectedHostIds.add(match.hostId);
+    expectedSessionIds.add(match.sessionId);
   }
 
   const actualSessionIds = new Set<string>();
@@ -1546,15 +1545,16 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
         return fittedRaw;
         })();
-        if (
-          spec.policy.write
-          && deps.chatSessionId
-          && !(result && typeof result === 'object' && (
+        if (spec.policy.write && deps.chatSessionId) {
+          const failed = Boolean(result && typeof result === 'object' && (
             (result as { ok?: unknown }).ok === false
             || typeof (result as { error?: unknown }).error === 'string'
-          ))
-        ) {
-          commitToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
+          ));
+          if (failed) {
+            failToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
+          } else {
+            commitToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
+          }
         }
         if (toolOutputStore && deps.chatSessionId) {
           await toolOutputStore.flush(deps.chatSessionId);

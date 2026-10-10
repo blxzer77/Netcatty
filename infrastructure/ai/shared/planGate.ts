@@ -67,6 +67,8 @@ interface ApprovedPlanScope {
   validateExecution?: () => string | null;
   /** The next executable step that may be claimed by a write tool call. */
   nextStepIndex: number;
+  /** Any failed, cancelled, or diverged write stops the remaining grant. */
+  stopped?: boolean;
 }
 
 const pendingPlans = new Map<string, PendingPlanEntry>();
@@ -485,7 +487,7 @@ export function isToolCoveredByApprovedPlan(
     : [];
 
   for (const scope of scopes) {
-    if (scope.validateExecution?.()) continue;
+    if (scope.stopped || scope.validateExecution?.()) continue;
     // Plans submitted by Catty contain executable write steps only. A read step
     // must not be silently skipped because doing so would weaken plan order.
     const step = scope.steps[scope.nextStepIndex];
@@ -521,13 +523,40 @@ export function commitToolCoveredByApprovedPlan(
     ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
     : [];
   for (const scope of scopes) {
-    if (scope.validateExecution?.()) continue;
+    if (scope.stopped || scope.validateExecution?.()) continue;
     const step = scope.steps[scope.nextStepIndex];
     if (!step || step.toolName !== toolName) continue;
     if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) continue;
     const expectedArgs = expectedPlanArgs(step);
     if (!expectedArgs || !samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs)) continue;
     scope.nextStepIndex += 1;
+    return true;
+  }
+  return false;
+}
+
+/** Stop an approved plan when a covered write did not complete successfully. */
+export function failToolCoveredByApprovedPlan(
+  chatSessionId: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+): boolean {
+  if (!chatSessionId) return false;
+  const scopes = approvedPlansByChatSession.get(chatSessionId);
+  if (!scopes?.length) return false;
+  const comparableArgs = normalizePlanArgs(toolName, args);
+  const sessionId = typeof comparableArgs.sessionId === 'string' ? comparableArgs.sessionId : undefined;
+  const sessionIds = Array.isArray(comparableArgs.sessionIds)
+    ? comparableArgs.sessionIds.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  for (const scope of scopes) {
+    if (scope.stopped || scope.validateExecution?.()) continue;
+    const step = scope.steps[scope.nextStepIndex];
+    if (!step || step.toolName !== toolName) continue;
+    if (step.sessionId && step.sessionId !== sessionId && !sessionIds.includes(step.sessionId)) continue;
+    const expectedArgs = expectedPlanArgs(step);
+    if (!expectedArgs || !samePlanArgs(normalizePlanArgs(toolName, expectedArgs), comparableArgs)) continue;
+    scope.stopped = true;
     return true;
   }
   return false;

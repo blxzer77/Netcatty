@@ -212,8 +212,9 @@ export function verifyBackupAccess(input: {
  * Hosts that the plan targets but that have fewer than two live sessions.
  *
  * A session counts as a fallback for a target when it is connected and matches
- * the target's host id, or — when the target has no host id — its hostname.
- * Matching on hostname keeps serial and local sessions comparable.
+ * the target's complete canonical identity. A target with a host id must never
+ * fall back to hostname matching because aliases and incomplete sessions are
+ * not proof of the same host.
  */
 function countLiveFallbacks(
   hosts: readonly BackupAccessHost[],
@@ -225,8 +226,8 @@ function countLiveFallbacks(
   for (const target of pool) {
     const live = hosts.filter(host => {
       if (!host.connected) return false;
-      if (target.hostId && host.hostId) return host.hostId === target.hostId;
-      return host.hostname === target.hostname;
+      if (target.hostId) return host.hostId === target.hostId;
+      return Boolean(target.hostname && host.hostname && host.hostname === target.hostname);
     }).length;
     if (live < 2) {
       underReserved.push(target.hostname || target.hostId || 'the target host');

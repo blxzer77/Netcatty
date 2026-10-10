@@ -108,10 +108,14 @@ export async function executeTerminalExecute(
   }
 
   let cancellationAcknowledgement: Promise<unknown> | undefined;
+  let cancellationError: string | undefined;
   const cancelOnAbort = () => {
     cancellationAcknowledgement = deps.chatSessionId && deps.bridge.aiCattyCancelExec
       ? deps.bridge.aiCattyCancelExec(deps.chatSessionId)
-      : Promise.resolve();
+      : Promise.reject(new Error('Main-process terminal cancellation is unavailable.'));
+    // Keep a rejection handler attached while the underlying exec request is
+    // still settling; the same promise is awaited below for the real result.
+    void cancellationAcknowledgement.catch(() => {});
   };
   abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
   let result: Awaited<ReturnType<NetcattyBridge['aiExec']>>;
@@ -119,8 +123,23 @@ export async function executeTerminalExecute(
     result = await bridge.aiExec(sessionId, command, deps.chatSessionId, options.expectedTarget);
   } finally {
     abortSignal?.removeEventListener('abort', cancelOnAbort);
-    await cancellationAcknowledgement?.catch(() => {});
+    if (cancellationAcknowledgement) {
+      try {
+        const acknowledgement = await cancellationAcknowledgement;
+        if (
+          acknowledgement
+          && typeof acknowledgement === 'object'
+          && 'ok' in acknowledgement
+          && (acknowledgement as { ok?: unknown }).ok === false
+        ) {
+          cancellationError = String((acknowledgement as { error?: unknown }).error || 'Main-process terminal cancellation was not acknowledged.');
+        }
+      } catch (error) {
+        cancellationError = error instanceof Error ? error.message : String(error);
+      }
+    }
   }
+  if (cancellationError) return { ok: false, error: cancellationError };
   // Real execution failures (timeout, disconnect, no stream) have an `error` field
   if (!result.ok && result.error) {
     return {
