@@ -310,6 +310,8 @@ function registerCattyExecHandlers(ctx) {
     return mcpServerBridge.dispatchBuiltinRpc(rpcMethod, {
       ...(params || {}),
       chatSessionId,
+    }, {
+      chatSessionId,
     });
   });
   }

@@ -15,7 +15,7 @@ import {
   type ToolExecResult,
 } from '../shared/toolExecutors';
 import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutionQueue';
-import { proposePlan, type PlanDecision } from '../shared/planGate';
+import { hasUnsafePlanCommand, proposePlan, type PlanDecision } from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
 import {
   compareHostOutputs,
@@ -309,6 +309,14 @@ function parsePlanPayload(raw: unknown): { steps?: PlanStep[]; preconditions?: P
       ...(typeof step.risk === 'string' ? { risk: step.risk as PlanStep['risk'] } : {}),
     } satisfies PlanStep;
   });
+  const unsafeCommandStep = steps.find(step => {
+    if (!['terminal_execute', 'terminal_start', 'terminal_batch'].includes(step.toolName ?? '')) return false;
+    const command = step.command ?? (typeof step.args?.command === 'string' ? step.args.command : '');
+    return hasUnsafePlanCommand(command);
+  });
+  if (unsafeCommandStep) {
+    return { error: `Plan step "${unsafeCommandStep.title}" contains shell composition or dynamic command execution, which is not allowed in an approved plan.` };
+  }
   const inconsistent = steps.find(step => {
     const args = step.args;
     if (!args) return false;
@@ -1106,7 +1114,10 @@ function resolveSessionQueueKey(
       ? resolveHostWriteQueueKey(context ?? { sessions: [] }, sessionId)
       : `${chatSessionId ?? 'global'}:${sessionId}`;
   }
-  if (spec.capabilityId === 'vault.host.notes.set' && typeof args.hostId === 'string') {
+  if (
+    ['vault.host.notes.set', 'portforward.start', 'portforward.stop'].includes(spec.capabilityId)
+    && typeof args.hostId === 'string'
+  ) {
     return hostWriteQueueKey(`id:${args.hostId}`);
   }
   return `${chatSessionId ?? 'global'}:${spec.toolName}`;

@@ -45,8 +45,8 @@ const plan: ProposedPlan = {
     },
   ],
   preconditions: [
-    { id: 'p1', label: 'A second live connection to the host exists', ok: true },
-    { id: 'p2', label: 'Alternate route tested and reachable', ok: true, detail: 'via 203.0.113.9:22' },
+    { id: 'p1', label: 'A second live connection to the host exists', ok: true, verified: true },
+    { id: 'p2', label: 'Alternate route tested and reachable', ok: true, verified: true, detail: 'via 203.0.113.9:22' },
   ],
 };
 
@@ -90,6 +90,18 @@ test('PlanApprovalCard redacts secrets in visible free-text fields', () => {
 
   assert.doesNotMatch(markup, /tok_live_1234567890|secret-token-value|super-secret/);
   assert.match(markup, /REDACTED|redacted/);
+});
+
+test('PlanApprovalCard warns when a precondition is unverified', () => {
+  const markup = renderCard({
+    ...plan,
+    preconditions: [
+      { id: 'p1', label: 'A second live connection to the host exists', ok: true, verified: false },
+    ],
+  });
+
+  assert.match(markup, /unverified/);
+  assert.match(markup, /did not pass/);
 });
 
 test('PlanApprovalCard warns when a precondition blocks the plan', () => {

@@ -20,7 +20,7 @@ export const PlanApprovalCard: React.FC<{
 }> = ({ plan, onApprove, onReject }) => {
   const { t } = useI18n();
   const preconditions = plan.preconditions ?? [];
-  const failedPreconditions = preconditions.filter((check) => !check.ok);
+  const failedPreconditions = preconditions.filter((check) => !check.ok || check.verified !== true);
 
   return (
     <div
@@ -52,14 +52,14 @@ export const PlanApprovalCard: React.FC<{
           <ul className="space-y-0.5">
             {preconditions.map((check) => (
               <li key={check.id} className="flex items-start gap-1.5 text-xs leading-5">
-                {check.ok && check.verified !== false ? (
+                {check.ok && check.verified === true ? (
                   <ShieldCheck size={13} className="mt-0.5 shrink-0 text-emerald-500" />
                 ) : (
-                  <ShieldAlert size={13} className={`mt-0.5 shrink-0 ${check.ok ? 'text-amber-500' : 'text-destructive'}`} />
+                  <ShieldAlert size={13} className={`mt-0.5 shrink-0 ${check.ok && check.verified !== true ? 'text-amber-500' : 'text-destructive'}`} />
                 )}
                 <span className="min-w-0">
-                  <span className={check.ok ? (check.verified === false ? 'text-amber-600 dark:text-amber-400' : '') : 'text-destructive'}>
-                    {formatPlanText(check.label)}{check.ok && check.verified === false ? ` (${t('ai.plan.unverified')})` : ''}
+                  <span className={check.ok && check.verified === true ? '' : check.ok ? 'text-amber-600 dark:text-amber-400' : 'text-destructive'}>
+                    {formatPlanText(check.label)}{check.ok && check.verified !== true ? ` (${t('ai.plan.unverified')})` : ''}
                   </span>
                   {check.detail ? (
                     <span className="block text-muted-foreground">{formatPlanText(check.detail)}</span>

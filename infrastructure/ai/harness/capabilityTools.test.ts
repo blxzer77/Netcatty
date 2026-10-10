@@ -85,6 +85,18 @@ describe('capabilityTools session queue keys', () => {
     assert.equal(key, 'host:name:shared.example:ssh');
   });
 
+  it('serializes port-forward writes by host across chat sessions', () => {
+    const spec = {
+      capabilityId: 'portforward.start',
+      toolName: 'portforward_start',
+      policy: { write: true, bypassesApproval: false },
+    } as const;
+    const first = resolveSessionQueueKeyForTests(spec, { ruleId: 'rule-1', hostId: 'host-1' }, 'chat-1');
+    const second = resolveSessionQueueKeyForTests(spec, { ruleId: 'rule-2', hostId: 'host-1' }, 'chat-2');
+    assert.equal(first, 'host:id:host-1');
+    assert.equal(second, first);
+  });
+
   it('keeps reads on the same session ordered per chat session', () => {
     const key = resolveSessionQueueKeyForTests(
       {
@@ -962,6 +974,28 @@ describe('capabilityTools submit_plan', () => {
     }) as { error: string };
 
     assert.match(result.error, /inconsistently between its summary fields and args/);
+  });
+
+  it('rejects command substitution in an approved plan before the risk gate', async () => {
+    resetPlanGateForTests();
+    const { tools, toolsContext } = planTools('confirm', 'chat-plan-substitution');
+    const result = await withCattyToolContext(
+      tools.submit_plan,
+      toolsContext.submit_plan,
+      'plan-substitution',
+    ).execute({
+      goal: 'inspect the host',
+      steps: JSON.stringify([{
+        id: 's1',
+        title: 'Hidden command',
+        toolName: 'terminal_execute',
+        sessionId: 'session-a',
+        command: 'echo $(cat /etc/shadow)',
+        args: { sessionId: 'session-a', command: 'echo $(cat /etc/shadow)' },
+      }]),
+    }) as { error: string };
+
+    assert.match(result.error, /shell composition or dynamic command execution/);
   });
 
   it('rejects plan targets outside the live host scope', async () => {

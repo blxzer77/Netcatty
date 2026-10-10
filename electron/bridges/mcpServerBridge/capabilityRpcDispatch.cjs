@@ -130,6 +130,12 @@ function createCapabilityRpcDispatcher(deps) {
   };
 
   const dispatchCapabilityRpc = async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
+    const trustedChatSessionId = typeof approvalContext.chatSessionId === "string"
+      ? approvalContext.chatSessionId
+      : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
+    const scopedParams = trustedChatSessionId
+      ? { ...params, chatSessionId: trustedChatSessionId }
+      : params;
     if (typeof rpcMethod !== "string" || rpcMethod.startsWith("netcatty/")) {
       return UNROUTED;
     }
@@ -181,16 +187,16 @@ function createCapabilityRpcDispatcher(deps) {
       };
     }
     if (
-      typeof params?.chatSessionId === "string"
+      typeof trustedChatSessionId === "string"
       && ["vault.host.notes.get", "vault.host.notes.set", "portforward.start", "portforward.stop"].includes(capability.id)
     ) {
       const requestedHostId = typeof params?.hostId === "string" ? params.hostId.trim() : "";
       const scopedSessionIds = typeof getScopedSessionIds === "function"
-        ? getScopedSessionIds(params.chatSessionId)
+        ? getScopedSessionIds(trustedChatSessionId)
         : [];
       const inScope = requestedHostId && scopedSessionIds.some((sessionId) => {
         const meta = typeof getSessionMeta === "function"
-          ? getSessionMeta(sessionId, params.chatSessionId)
+          ? getSessionMeta(sessionId, trustedChatSessionId)
           : null;
         return meta?.connected === true
           && (meta.hostId || meta.savedHostId) === requestedHostId;
@@ -207,9 +213,9 @@ function createCapabilityRpcDispatcher(deps) {
       rpcMethod,
       surface,
       permissionMode: deps.permissionMode,
-      params,
+      params: scopedParams,
       context: {
-        chatSessionCancelled: isChatSessionCancelled(params?.chatSessionId),
+        chatSessionCancelled: isChatSessionCancelled(trustedChatSessionId),
         hostId: approvalTarget?.hostId,
       },
     }, deps.permissionGrantsSnapshot);
@@ -219,7 +225,7 @@ function createCapabilityRpcDispatcher(deps) {
     }
 
     if (permission.requiresApproval && !deps.hasSessionApproval?.(approvalContext.externalSocket)) {
-      const { chatSessionId, ...toolArgs } = params || {};
+      const { chatSessionId, ...toolArgs } = scopedParams || {};
       const toolName = getMcpToolNameForRpcMethod(rpcMethod, surface)
         || capability.surfaces?.[CAPABILITY_SURFACES.PUBLIC]?.mcpTool
         || capability.id;
@@ -242,32 +248,32 @@ function createCapabilityRpcDispatcher(deps) {
     }
 
     const hostOpenGeneration = capability.id === "vault.host.open"
-      ? deps.captureHostOpenScope?.(params?.chatSessionId)
+      ? deps.captureHostOpenScope?.(trustedChatSessionId)
       : null;
     const shouldCancelPortForwardStart = capability.id === "portforward.start"
-      && typeof params?.chatSessionId === "string"
-      && typeof params?.ruleId === "string";
+      && typeof trustedChatSessionId === "string"
+      && typeof scopedParams?.ruleId === "string";
     let operationPromise;
     const unregisterCancellation = shouldCancelPortForwardStart
-      ? registerChatCancellation(params.chatSessionId, async () => {
+      ? registerChatCancellation(trustedChatSessionId, async () => {
           // Wait for a start that is already in flight, then stop the exact
           // rule. This prevents cancellation acknowledgement from racing a
           // late tunnel creation.
           await operationPromise?.catch(() => {});
           if (typeof invokeVaultAgent === "function") {
             await invokeVaultAgent("portforward.stop", {
-              ruleId: params.ruleId,
-              hostId: params.hostId,
-              chatSessionId: params.chatSessionId,
+              ruleId: scopedParams.ruleId,
+              hostId: scopedParams.hostId,
+              chatSessionId: trustedChatSessionId,
             });
           }
         })
       : () => {};
     try {
-      operationPromise = Promise.resolve(handler(params));
+      operationPromise = Promise.resolve(handler(scopedParams));
       const result = await operationPromise;
       if (capability.id === "vault.host.open" && result?.ok !== false && result?.sessionId) {
-        await deps.onHostOpened?.(params?.chatSessionId, result.sessionId, hostOpenGeneration, result);
+        await deps.onHostOpened?.(trustedChatSessionId, result.sessionId, hostOpenGeneration, result);
       }
       return result;
     } finally {

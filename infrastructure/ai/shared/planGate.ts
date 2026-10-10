@@ -114,6 +114,12 @@ type PlanTraceEvent =
 const TRACE_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
 const TRACE_SECRET_PATTERN = /(?:^|[^A-Za-z0-9])(?:api[_-]?(?:key|token)|access[_-]?token|token|password|secret)\s*[:=]\s*[^\s,;]+/gi;
 const TRACE_SSH_PASSWORD_PATTERN = /(\bsshpass\s+-p\s+)(?:"[^"]*"|'[^']*'|\S+)/gi;
+const UNSAFE_PLAN_COMMAND_PATTERN = /(?:\$\(|`|\$\{|\beval\b|\b(?:sh|bash|zsh)\s+-c\b|\b(?:python(?:3)?|perl|ruby|node|php|lua)\s+-c\b|[\r\n;&|<>])/i;
+
+/** Approved plans never contain shell composition or dynamic code execution. */
+export function hasUnsafePlanCommand(command: string): boolean {
+  return UNSAFE_PLAN_COMMAND_PATTERN.test(command);
+}
 
 function redactTraceValue(value: unknown, key?: string): unknown {
   if (key && TRACE_SENSITIVE_KEY.test(key)) return '[redacted]';
@@ -459,6 +465,7 @@ export function isToolCoveredByApprovedPlan(
   args: Record<string, unknown>,
 ): boolean {
   if (!chatSessionId) return false;
+  if (typeof args.command === 'string' && hasUnsafePlanCommand(args.command)) return false;
   const scopes = approvedPlansByChatSession.get(chatSessionId);
   if (!scopes?.length) return false;
   const comparableArgs = normalizePlanArgs(toolName, args);
