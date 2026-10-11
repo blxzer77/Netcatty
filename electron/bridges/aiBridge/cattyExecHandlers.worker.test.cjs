@@ -33,8 +33,12 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
       locks.push(["release", sessionId, token]);
     },
     getSessionMeta() {
-      return { protocol: "ssh", deviceType: "", hostname: "host.example" };
+      return { protocol: "ssh", deviceType: "", hostname: "host.example", hostId: "host-1" };
     },
+    validateCattyPlanStep() {
+      return { ok: true, targetIdentity: { hostId: "host-1", hostname: "host.example", protocol: "ssh" } };
+    },
+    settleCattyPlanStep() {},
     checkCommandSafetyForShell() {
       return { blocked: false };
     },
@@ -71,7 +75,7 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
 
   const result = await ipcMain.handlers.get("netcatty:ai:exec")(
     { sender: { id: 7 } },
-    { sessionId: "ssh-1", command: "pwd", chatSessionId: "chat-1" },
+    { sessionId: "ssh-1", command: "pwd", chatSessionId: "chat-1", approvalToken: "token-1" },
   );
 
   assert.deepEqual(result, { ok: true, stdout: "ok\n" });
@@ -83,7 +87,8 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
         command: "pwd",
         chatSessionId: "chat-1",
         commandTimeoutMs: 12345,
-        sessionMeta: { protocol: "ssh", deviceType: "", hostname: "host.example" },
+        sessionMeta: { protocol: "ssh", deviceType: "", hostname: "host.example", hostId: "host-1" },
+        expectedTarget: { hostId: "host-1", hostname: "host.example", protocol: "ssh" },
         commandBlocklist: [],
       },
       options: { webContentsId: 7 },
