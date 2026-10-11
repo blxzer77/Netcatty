@@ -143,6 +143,7 @@ function registerCattyExecHandlers(ctx) {
         toolName: "terminal_execute",
         args: { sessionId, command },
         sessionId,
+        webContentsId: event.sender.id,
       });
       if (!authorization.ok) return authorization;
       executionTarget = authorization.targetIdentity;
@@ -410,6 +411,7 @@ function registerCattyExecHandlers(ctx) {
       ...(approvalToken ? { approvalToken } : {}),
     }, {
       chatSessionId,
+      webContentsId: event.sender.id,
       catty: true,
       ...(approvalToken ? { cattyPlanToken: approvalToken } : {}),
     });

@@ -87,6 +87,35 @@ test("dispatchCapabilityRpc routes public vault host notes set through approval"
   assert.equal(result.notes, "updated");
 });
 
+test("Catty write capability validation receives the owning renderer binding", async () => {
+  const validations = [];
+  const dispatch = createTestDispatcher({
+    validateCattyPlanStep: (input) => {
+      validations.push(input);
+      return {
+        ok: true,
+        targetIdentity: { hostId: "host-1", hostname: "host.example", protocol: "ssh" },
+      };
+    },
+    settleCattyPlanStep() {},
+    invokeVaultAgent: async (_op, params) => ({ ok: true, hostId: params.hostId, notes: params.notes }),
+  });
+
+  const result = await dispatch("vault/host/notes/set", {
+    hostId: "host-1",
+    notes: "updated",
+  }, {
+    catty: true,
+    cattyPlanToken: "plan-token",
+    chatSessionId: "chat-1",
+    webContentsId: 77,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(validations.length, 2);
+  assert.deepEqual(validations.map((entry) => entry.webContentsId), [77, 77]);
+});
+
 test("vault host deletion cannot borrow a different session's host grant", async () => {
   let approvalTarget;
   let deleted = false;

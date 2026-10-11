@@ -172,6 +172,9 @@ function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentit
 
 function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities, webContentsId } = {}) {
   pruneCattyPlanAuthorizations();
+  if (!Number.isInteger(webContentsId)) {
+    return { ok: false, error: "Catty plan must be created by a bound renderer." };
+  }
   const error = validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities });
   if (error) return { ok: false, error };
   const token = crypto.randomBytes(32).toString("hex");
@@ -190,7 +193,7 @@ function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities, webC
 function approveCattyPlan({ chatSessionId, planId, proposalToken, webContentsId } = {}) {
   const entry = cattyPendingPlans.get(proposalToken);
   if (!entry || entry.chatSessionId !== chatSessionId || entry.planId !== planId
-    || (entry.webContentsId !== null && entry.webContentsId !== webContentsId)) {
+    || entry.webContentsId !== webContentsId) {
     return { ok: false, error: "Catty plan proposal is missing or does not match this chat." };
   }
   entry.approved = true;
@@ -201,7 +204,7 @@ async function authorizeCattyPlan({ proposalToken, webContentsId } = {}) {
   pruneCattyPlanAuthorizations();
   const proposal = cattyPendingPlans.get(proposalToken);
   if (!proposal || proposal.approved !== true
-    || (proposal.webContentsId !== null && proposal.webContentsId !== webContentsId)
+    || proposal.webContentsId !== webContentsId
     || !isCattyWebContentsChatBound(webContentsId, proposal?.chatSessionId)) {
     return { ok: false, error: "Catty plan has not been approved by the main-process plan registry." };
   }
@@ -226,6 +229,7 @@ async function authorizeCattyPlan({ proposalToken, webContentsId } = {}) {
     planId,
     steps,
     targetIdentities,
+    webContentsId: proposal.webContentsId,
     notesFingerprints,
     nextStepIndex: 0,
     claimed: false,
@@ -264,10 +268,12 @@ function stripCattyInternalParams(args = {}) {
   return copy;
 }
 
-function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity, claim = true } = {}) {
+function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity, webContentsId, claim = true } = {}) {
   pruneCattyPlanAuthorizations();
   const entry = cattyPlanAuthorizations.get(token);
-  if (!entry || entry.chatSessionId !== chatSessionId || entry.stopped) {
+  if (!entry || entry.chatSessionId !== chatSessionId
+    || entry.webContentsId !== webContentsId
+    || entry.stopped) {
     return { ok: false, error: "Catty plan authorization is missing, expired, or already in use." };
   }
   const step = entry.steps[entry.nextStepIndex];

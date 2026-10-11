@@ -1302,6 +1302,27 @@ function createCatalogTool(spec: CattyToolSpec) {
       );
       const slot = queueKey ? reserveSessionSlot(queueKey) : null;
       let retainQueueSlot = false;
+      let underlyingSettled = false;
+      let queueSlotReleased = false;
+      const releaseQueueSlot = () => {
+        if (queueSlotReleased) return;
+        queueSlotReleased = true;
+        slot?.release();
+      };
+      const markUnderlyingSettled = () => {
+        underlyingSettled = true;
+        if (retainQueueSlot) {
+          retainQueueSlot = false;
+          releaseQueueSlot();
+        }
+      };
+      const retainUntilUnderlyingSettles = () => {
+        retainQueueSlot = true;
+        if (underlyingSettled) {
+          retainQueueSlot = false;
+          releaseQueueSlot();
+        }
+      };
 
       try {
         const result = await (async () => {
@@ -1352,12 +1373,7 @@ function createCatalogTool(spec: CattyToolSpec) {
                   spec.toolName,
                   args as Record<string, unknown>,
                 ),
-                onUnderlyingSettled: () => {
-                  if (retainQueueSlot) {
-                    retainQueueSlot = false;
-                    slot?.release();
-                  }
-                },
+                onUnderlyingSettled: markUnderlyingSettled,
               },
             );
             if (result.ok === false) {
@@ -1513,12 +1529,7 @@ function createCatalogTool(spec: CattyToolSpec) {
           rpcParams,
           deps.chatSessionId,
           abortSignal,
-          () => {
-            if (retainQueueSlot) {
-              retainQueueSlot = false;
-              slot?.release();
-            }
-          },
+          markUnderlyingSettled,
         );
         if (
           spec.capabilityId === 'terminal.start'
@@ -1686,7 +1697,7 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
         return fittedRaw;
         })();
-        retainQueueSlot = Boolean(
+        const shouldRetainQueueSlot = Boolean(
           result
           && typeof result === 'object'
           && (result as { retainQueueSlot?: unknown }).retainQueueSlot === true,
@@ -1696,6 +1707,7 @@ function createCatalogTool(spec: CattyToolSpec) {
           && typeof result === 'object'
           && ((result as { ok?: unknown }).ok === false || typeof (result as { error?: unknown }).error === 'string'),
         );
+        if (shouldRetainQueueSlot) retainUntilUnderlyingSettles();
         if (spec.policy.write && deps.chatSessionId) {
           const failed = Boolean(result && typeof result === 'object' && (
             (result as { ok?: unknown }).ok === false
@@ -1713,7 +1725,7 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
         return result;
       } finally {
-        if (!retainQueueSlot) slot?.release();
+        if (!retainQueueSlot) releaseQueueSlot();
       }
   }
 

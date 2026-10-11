@@ -198,6 +198,7 @@ function createCapabilityRpcDispatcher(deps) {
             toolName: cattyToolName,
             args: scopedParams,
             sessionId: scopedParams.sessionId,
+            webContentsId: approvalContext.webContentsId,
             claim: false,
           })
         : { ok: false, error: "Catty plan authorization is unavailable." };
@@ -376,6 +377,7 @@ function createCapabilityRpcDispatcher(deps) {
         toolName: getMcpToolNameForRpcMethod(rpcMethod, surface) || capability.id,
         args: scopedParams,
         sessionId: scopedParams.sessionId,
+        webContentsId: approvalContext.webContentsId,
       });
       if (!claimed.ok) {
         if (ownsPortForwardStartLock) activePortForwardStarts.delete(scopedParams.ruleId);

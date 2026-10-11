@@ -22,6 +22,7 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
     },
   };
   const locks = [];
+  const planStepValidations = [];
   const mcpServerBridge = {
     getPermissionMode: () => "auto",
     getSessionBusyError: () => null,
@@ -35,7 +36,8 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
     getSessionMeta() {
       return { protocol: "ssh", deviceType: "", hostname: "host.example", hostId: "host-1" };
     },
-    validateCattyPlanStep() {
+    validateCattyPlanStep(payload) {
+      planStepValidations.push(payload);
       return { ok: true, targetIdentity: { hostId: "host-1", hostname: "host.example", protocol: "ssh" } };
     },
     settleCattyPlanStep() {},
@@ -101,4 +103,5 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
     ["reserve", "ssh-1", "exec"],
     ["release", "ssh-1", "token-1"],
   ]);
+  assert.equal(planStepValidations[0]?.webContentsId, 7);
 });
