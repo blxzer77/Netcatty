@@ -146,7 +146,7 @@ function stripCattyInternalParams(args = {}) {
   return copy;
 }
 
-function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity } = {}) {
+function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity, claim = true } = {}) {
   pruneCattyPlanAuthorizations();
   const entry = cattyPlanAuthorizations.get(token);
   if (!entry || entry.chatSessionId !== chatSessionId || entry.stopped) {
@@ -182,7 +182,7 @@ function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId
     entry.stopped = true;
     return { ok: false, error: "Approved Catty plan target identity changed." };
   }
-  entry.claimed = true;
+  if (claim) entry.claimed = true;
   const hostId = args?.hostId || expected.hostId;
   return {
     ok: true,

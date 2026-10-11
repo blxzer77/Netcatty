@@ -198,6 +198,7 @@ function createCapabilityRpcDispatcher(deps) {
             toolName: cattyToolName,
             args: scopedParams,
             sessionId: scopedParams.sessionId,
+            claim: false,
           })
         : { ok: false, error: "Catty plan authorization is unavailable." };
       if (!cattyAuthorization.ok) return cattyAuthorization;
@@ -367,6 +368,20 @@ function createCapabilityRpcDispatcher(deps) {
         ownsPortForwardStartLock = false;
         return { ok: false, error: "Port-forward rule already has an active tunnel; stop it explicitly before starting it again." };
       }
+    }
+    if (approvalContext.catty === true && capability.policy?.write) {
+      const claimed = deps.validateCattyPlanStep({
+        token: approvalContext.cattyPlanToken,
+        chatSessionId: trustedChatSessionId,
+        toolName: getMcpToolNameForRpcMethod(rpcMethod, surface) || capability.id,
+        args: scopedParams,
+        sessionId: scopedParams.sessionId,
+      });
+      if (!claimed.ok) {
+        if (ownsPortForwardStartLock) activePortForwardStarts.delete(scopedParams.ruleId);
+        return claimed;
+      }
+      cattyAuthorization = claimed;
     }
     let operationPromise;
     const unregisterCancellation = shouldTrackChatOperation
