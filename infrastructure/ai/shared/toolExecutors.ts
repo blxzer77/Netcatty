@@ -69,6 +69,7 @@ export async function executeTerminalExecute(
   options: {
     abortSignal?: AbortSignal;
     expectedTarget?: { hostId?: string; hostname?: string; protocol?: string };
+    approvalToken?: string;
   } = {},
 ): Promise<ToolExecResult<{ stdout: string; stderr: string; exitCode: number | null }>> {
   const { bridge, context, commandBlocklist, permissionMode } = deps;
@@ -108,19 +109,42 @@ export async function executeTerminalExecute(
   }
 
   let cancellationAcknowledgement: Promise<unknown> | undefined;
+  let resolveCancellationOutcome: ((result: { ok: false; error: string }) => void) | undefined;
+  const cancellationOutcome = new Promise<{ ok: false; error: string }>(resolve => {
+    resolveCancellationOutcome = resolve;
+  });
   let cancellationError: string | undefined;
   const cancelOnAbort = () => {
     cancellationAcknowledgement = deps.chatSessionId && deps.bridge.aiCattyCancelExec
       ? deps.bridge.aiCattyCancelExec(deps.chatSessionId)
       : Promise.reject(new Error('Main-process terminal cancellation is unavailable.'));
-    // Keep a rejection handler attached while the underlying exec request is
+    void cancellationAcknowledgement.then(
+      (acknowledgement) => resolveCancellationOutcome?.({
+        ok: false,
+        error: acknowledgement && typeof acknowledgement === 'object' && 'error' in acknowledgement
+          ? String((acknowledgement as { error?: unknown }).error || 'Terminal cancellation was acknowledged.')
+          : 'Terminal execution cancelled with the owning turn.',
+      }),
+      (error) => resolveCancellationOutcome?.({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    // Keep rejection handlers attached while the underlying exec request is
     // still settling; the same promise is awaited below for the real result.
     void cancellationAcknowledgement.catch(() => {});
   };
   abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
   let result: Awaited<ReturnType<NetcattyBridge['aiExec']>>;
   try {
-    result = await bridge.aiExec(sessionId, command, deps.chatSessionId, options.expectedTarget);
+    const executionRequest = bridge.aiExec(
+      sessionId,
+      command,
+      deps.chatSessionId,
+      options.expectedTarget,
+      options.approvalToken,
+    );
+    result = await Promise.race([executionRequest, cancellationOutcome]);
   } finally {
     abortSignal?.removeEventListener('abort', cancelOnAbort);
     if (cancellationAcknowledgement) {

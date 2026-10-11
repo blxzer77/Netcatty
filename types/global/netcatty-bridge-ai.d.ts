@@ -8,7 +8,8 @@ declare global {
     aiChatCancel?(requestId: string): Promise<boolean>;
     aiFetch?(url: string, method?: string, headers?: Record<string, string>, body?: string, providerId?: string, skipHostCheck?: boolean, followRedirects?: boolean, skipTLSVerify?: boolean): Promise<{ ok: boolean; status?: number; data: string; error?: string }>;
     aiAllowlistAddHost?(baseURL: string): Promise<{ ok: boolean; error?: string }>;
-    aiExec?(sessionId: string, command: string, chatSessionId?: string): Promise<{ ok: boolean; stdout?: string; stderr?: string; exitCode?: number | null; error?: string }>;
+    aiAuthorizeCattyPlan?(payload: { chatSessionId: string; planId: string; steps: unknown[]; targetIdentities: unknown[] }): Promise<{ ok: boolean; token?: string; error?: string }>;
+    aiExec?(sessionId: string, command: string, chatSessionId?: string, expectedTarget?: { hostId?: string; hostname?: string; protocol?: string }, approvalToken?: string): Promise<{ ok: boolean; stdout?: string; stderr?: string; exitCode?: number | null; error?: string }>;
     aiCattyCancelExec?(chatSessionId: string): Promise<{ ok: boolean; error?: string }>;
     aiDiscoverAgents?(options?: { refreshShellEnv?: boolean; apiKeyPresent?: boolean }): Promise<Array<{
       command: string;

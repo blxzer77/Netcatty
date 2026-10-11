@@ -182,9 +182,35 @@ function createCapabilityRpcDispatcher(deps) {
       : surface === CAPABILITY_SURFACES.GLOBAL
         ? undefined
         : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
-    const scopedParams = trustedChatSessionId
+    let scopedParams = trustedChatSessionId
       ? { ...params, chatSessionId: trustedChatSessionId }
       : params;
+    let cattyAuthorization;
+    if (approvalContext.catty === true && capability.policy?.write) {
+      if (typeof approvalContext.cattyPlanToken !== "string" || typeof trustedChatSessionId !== "string") {
+        return { ok: false, error: "A main-process Catty plan authorization is required." };
+      }
+      const cattyToolName = getMcpToolNameForRpcMethod(rpcMethod, surface) || capability.id;
+      cattyAuthorization = deps.validateCattyPlanStep
+        ? deps.validateCattyPlanStep({
+            token: approvalContext.cattyPlanToken,
+            chatSessionId: trustedChatSessionId,
+            toolName: cattyToolName,
+            args: scopedParams,
+            sessionId: scopedParams.sessionId,
+          })
+        : { ok: false, error: "Catty plan authorization is unavailable." };
+      if (!cattyAuthorization.ok) return cattyAuthorization;
+      scopedParams = {
+        ...scopedParams,
+        expectedHostId: cattyAuthorization.targetIdentity.hostId,
+        expectedHostname: cattyAuthorization.targetIdentity.hostname,
+        expectedProtocol: cattyAuthorization.targetIdentity.protocol,
+        ...(cattyAuthorization.notesFingerprint
+          ? { expectedNotesFingerprint: cattyAuthorization.notesFingerprint }
+          : {}),
+      };
+    }
     if (
       capability.policy?.write
       && !["session.close", "vault.host.delete"].includes(capability.id)
@@ -368,10 +394,21 @@ function createCapabilityRpcDispatcher(deps) {
     try {
       operationPromise = Promise.resolve(handler(scopedParams));
       const result = await operationPromise;
+      if (cattyAuthorization?.ok && approvalContext.cattyPlanToken) {
+        deps.settleCattyPlanStep?.(
+          approvalContext.cattyPlanToken,
+          Boolean(result && typeof result === "object" && result.ok !== false && !result.error),
+        );
+      }
       if (capability.id === "vault.host.open" && result?.ok !== false && result?.sessionId) {
         await deps.onHostOpened?.(trustedChatSessionId, result.sessionId, hostOpenGeneration, result);
       }
       return result;
+    } catch (error) {
+      if (cattyAuthorization?.ok && approvalContext.cattyPlanToken) {
+        deps.settleCattyPlanStep?.(approvalContext.cattyPlanToken, false);
+      }
+      throw error;
     } finally {
       unregisterCancellation();
       if (ownsPortForwardStartLock) activePortForwardStarts.delete(scopedParams.ruleId);

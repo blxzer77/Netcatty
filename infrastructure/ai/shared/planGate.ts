@@ -78,6 +78,8 @@ interface ApprovedPlanScope {
   validateExecution?: () => string | null;
   /** Immutable target identities captured before user approval. */
   targetIdentities: readonly ApprovedPlanTargetIdentity[];
+  /** Main-process authorization token for this approved plan. */
+  authorizationToken?: string;
   /** The next executable step that may be claimed by a write tool call. */
   nextStepIndex: number;
   /** Any failed, cancelled, or diverged write stops the remaining grant. */
@@ -547,6 +549,34 @@ function matchesCurrentPlanStep(
 }
 
 /** Return the immutable identity captured for the currently claimed step. */
+export function setApprovedPlanAuthorizationToken(
+  chatSessionId: string | undefined,
+  planId: string,
+  token: string,
+): boolean {
+  if (!chatSessionId || !token) return false;
+  const scopes = approvedPlansByChatSession.get(chatSessionId);
+  const scope = scopes?.find(entry => entry.planId === planId);
+  if (!scope) return false;
+  scope.authorizationToken = token;
+  return true;
+}
+
+export function getClaimedPlanAuthorizationToken(
+  chatSessionId: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+): string | undefined {
+  if (!chatSessionId) return undefined;
+  const scopes = approvedPlansByChatSession.get(chatSessionId);
+  if (!scopes?.length) return undefined;
+  const comparableArgs = normalizePlanArgs(toolName, args);
+  for (const scope of scopes) {
+    if (matchesCurrentPlanStep(scope, toolName, comparableArgs)) return scope.authorizationToken;
+  }
+  return undefined;
+}
+
 export function getClaimedPlanTargetIdentities(
   chatSessionId: string | undefined,
   toolName: string,

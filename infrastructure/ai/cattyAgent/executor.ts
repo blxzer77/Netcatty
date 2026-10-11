@@ -17,11 +17,18 @@ import type {
  * This mirrors the AI-related subset of window.netcatty from electron/preload.cjs.
  */
 export interface NetcattyBridge {
+  aiAuthorizeCattyPlan?(payload: {
+    chatSessionId: string;
+    planId: string;
+    steps: unknown[];
+    targetIdentities: unknown[];
+  }): Promise<{ ok: boolean; token?: string; error?: string }>;
   aiExec(
     sessionId: string,
     command: string,
     chatSessionId?: string,
     expectedTarget?: { hostId?: string; hostname?: string; protocol?: string },
+    approvalToken?: string,
   ): Promise<{
     ok: boolean;
     stdout?: string;
@@ -42,6 +49,7 @@ export interface NetcattyBridge {
     rpcMethod: string,
     params: Record<string, unknown>,
     chatSessionId?: string,
+    approvalToken?: string,
   ): Promise<unknown>;
 }
 

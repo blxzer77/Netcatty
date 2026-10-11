@@ -1855,8 +1855,11 @@ function createPreloadApi(ctx) {
   aiAllowlistAddHost: async (baseURL) => {
     return ipcRenderer.invoke("netcatty:ai:allowlist:add-host", { baseURL });
   },
-  aiExec: async (sessionId, command, chatSessionId, expectedTarget) => {
-    return ipcRenderer.invoke("netcatty:ai:exec", { sessionId, command, chatSessionId, expectedTarget });
+  aiAuthorizeCattyPlan: async (payload) => {
+    return ipcRenderer.invoke("netcatty:ai:authorize-plan", payload);
+  },
+  aiExec: async (sessionId, command, chatSessionId, expectedTarget, approvalToken) => {
+    return ipcRenderer.invoke("netcatty:ai:exec", { sessionId, command, chatSessionId, expectedTarget, approvalToken });
   },
   aiCattyCancelExec: async (chatSessionId) => {
     return ipcRenderer.invoke("netcatty:ai:catty:cancel", { chatSessionId });
@@ -1864,8 +1867,8 @@ function createPreloadApi(ctx) {
   aiSetChatSessionCancelled: async (chatSessionId, cancelled = true) => {
     return ipcRenderer.invoke("netcatty:ai:chat-session:set-cancelled", { chatSessionId, cancelled });
   },
-  aiCapability: async (rpcMethod, params, chatSessionId) => {
-    return ipcRenderer.invoke("netcatty:ai:capability", { rpcMethod, params, chatSessionId });
+  aiCapability: async (rpcMethod, params, chatSessionId, approvalToken) => {
+    return ipcRenderer.invoke("netcatty:ai:capability", { rpcMethod, params, chatSessionId, approvalToken });
   },
   aiDiscoverAgents: async (options) => {
     return ipcRenderer.invoke("netcatty:ai:agents:discover", options);

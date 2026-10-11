@@ -59,6 +59,143 @@ function getActiveCliDiscoveryFilePath() {
 let discoverySelfHealTimer = null;
 const DISCOVERY_SELF_HEAL_INTERVAL_MS = 15000;
 
+const cattyPlanAuthorizations = new Map();
+const CATTY_PLAN_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
+
+function canonicalCattyValue(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalCattyValue).join(",")}]`;
+  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalCattyValue(value[key])}`).join(",")}}`;
+}
+
+function pruneCattyPlanAuthorizations() {
+  const cutoff = Date.now() - CATTY_PLAN_AUTH_TTL_MS;
+  for (const [token, entry] of cattyPlanAuthorizations) {
+    if (entry.createdAt < cutoff) cattyPlanAuthorizations.delete(token);
+  }
+}
+
+function cattyNotesFingerprint(value) {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+async function authorizeCattyPlan({ chatSessionId, planId, steps, targetIdentities } = {}) {
+  pruneCattyPlanAuthorizations();
+  if (typeof chatSessionId !== "string" || !chatSessionId
+    || typeof planId !== "string" || !planId
+    || !Array.isArray(steps) || steps.length === 0
+    || !Array.isArray(targetIdentities)) {
+    return { ok: false, error: "A complete Catty plan authorization is required." };
+  }
+  const notesFingerprints = {};
+  for (const step of steps) {
+    if (step?.toolName !== "host_notes_set" && step?.toolName !== "vault_host_notes_set") continue;
+    const hostId = step?.args?.hostId || step?.hostId;
+    if (typeof hostId !== "string" || typeof invokeVaultAgentFn !== "function") {
+      return { ok: false, error: "Host notes authorization requires a main-process notes snapshot." };
+    }
+    const current = await invokeVaultAgentFn("host.notes.get", { hostId });
+    if (!current || current.ok === false || typeof current.notes !== "string") {
+      return { ok: false, error: "Host notes could not be snapshotted before authorization." };
+    }
+    notesFingerprints[hostId] = cattyNotesFingerprint(current.notes);
+  }
+  const token = crypto.randomBytes(32).toString("hex");
+  cattyPlanAuthorizations.set(token, {
+    chatSessionId,
+    planId,
+    steps: steps.map(step => ({ ...step })),
+    targetIdentities: targetIdentities.map(identity => ({ ...identity })),
+    notesFingerprints,
+    nextStepIndex: 0,
+    claimed: false,
+    createdAt: Date.now(),
+  });
+  return { ok: true, token };
+}
+
+function clearCattyPlanAuthorizations(chatSessionId) {
+  for (const [token, entry] of cattyPlanAuthorizations) {
+    if (entry.chatSessionId === chatSessionId) cattyPlanAuthorizations.delete(token);
+  }
+}
+
+function cattyPlanArgsForStep(step) {
+  if (step?.args && typeof step.args === "object" && !Array.isArray(step.args)) return step.args;
+  const args = {};
+  if (step?.sessionId) args.sessionId = step.sessionId;
+  if (step?.sessionIds) args.sessionIds = step.sessionIds;
+  if (step?.command) args.command = step.command;
+  if (step?.hostId) args.hostId = step.hostId;
+  return args;
+}
+
+function stripCattyInternalParams(args = {}) {
+  const copy = { ...args };
+  delete copy.approvalToken;
+  delete copy.expectedHostId;
+  delete copy.expectedHostname;
+  delete copy.expectedProtocol;
+  delete copy.expectedNotesFingerprint;
+  delete copy.chatSessionId;
+  return copy;
+}
+
+function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity } = {}) {
+  pruneCattyPlanAuthorizations();
+  const entry = cattyPlanAuthorizations.get(token);
+  if (!entry || entry.chatSessionId !== chatSessionId || entry.claimed || entry.stopped) {
+    return { ok: false, error: "Catty plan authorization is missing, expired, or already in use." };
+  }
+  const step = entry.steps[entry.nextStepIndex];
+  if (!step || step.toolName !== toolName
+    || canonicalCattyValue(cattyPlanArgsForStep(step)) !== canonicalCattyValue(stripCattyInternalParams(args))) {
+    entry.stopped = true;
+    return { ok: false, error: "Execution is outside the approved Catty plan." };
+  }
+  const expected = entry.targetIdentities.find(identity =>
+    (sessionId && identity.sessionId === sessionId)
+    || (typeof args?.sessionIds === "string" && (() => {
+      try { return JSON.parse(args.sessionIds).includes(identity.sessionId); } catch { return false; }
+    })())
+    || (Array.isArray(args?.sessionIds) && args.sessionIds.includes(identity.sessionId))
+    || (args?.hostId && identity.hostId === args.hostId),
+  );
+  if (!expected || (targetIdentity && (
+    targetIdentity.hostId !== expected.hostId
+    || String(targetIdentity.hostname || "").toLowerCase() !== expected.hostname.toLowerCase()
+    || String(targetIdentity.protocol || "").toLowerCase() !== expected.protocol.toLowerCase()
+  ))) {
+    entry.stopped = true;
+    return { ok: false, error: "Approved Catty plan target identity changed." };
+  }
+  entry.claimed = true;
+  const hostId = args?.hostId || expected.hostId;
+  return {
+    ok: true,
+    entry,
+    targetIdentity: expected,
+    ...(hostId && entry.notesFingerprints?.[hostId]
+      ? { notesFingerprint: entry.notesFingerprints[hostId] }
+      : {}),
+  };
+}
+
+function settleCattyPlanStep(token, success) {
+  const entry = cattyPlanAuthorizations.get(token);
+  if (!entry || !entry.claimed) return false;
+  entry.claimed = false;
+  if (success) entry.nextStepIndex += 1;
+  else entry.stopped = true;
+  if (entry.stopped || entry.nextStepIndex >= entry.steps.length) cattyPlanAuthorizations.delete(token);
+  return true;
+}
+
 // Track which sockets have completed authentication
 const authenticatedSockets = new WeakSet();
 // Sockets authenticated with the External MCP token (or that used the reserved scope).
@@ -1606,6 +1743,8 @@ const dispatchCapabilityRpc = createCapabilityRpcDispatcher({
   USER_DENIED_MESSAGE,
   getScopedSessionIds,
   getSessionMeta,
+  validateCattyPlanStep,
+  settleCattyPlanStep,
   listPortForwards: () => listActivePortForwards(),
   sessionService,
   captureHostOpenScope: (chatSessionId) => ({
@@ -1948,6 +2087,17 @@ function cancelWorkerBackgroundJobsForSession(chatSessionId) {
   } catch {
     // Worker may already be gone while cancelling a torn-down chat/session.
   }
+}
+
+function waitForCancellation(requestPromise, label) {
+  const timeoutMs = Math.max(1000, Math.min(commandTimeoutMs, 10000));
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} cancellation did not settle before the deadline.`)), timeoutMs);
+  });
+  return Promise.race([Promise.resolve(requestPromise), timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function waitForWorkerCleanup(requestPromise) {
@@ -2348,6 +2498,7 @@ async function applyChatSessionCancelled(chatSessionId, cancelled) {
   }
   if (cancelled) {
     setChatSessionCancelled(chatSessionId, true);
+    clearCattyPlanAuthorizations(chatSessionId);
     cancelPtyExecsForSession(chatSessionId);
     cancelBackgroundJobsForSession(chatSessionId);
     cancelWorkerBackgroundJobsForSession(chatSessionId);
@@ -2358,8 +2509,14 @@ async function applyChatSessionCancelled(chatSessionId, cancelled) {
     // its operation queue occupied. Fan out both cancellation paths even when
     // one native operation reports a failure, then surface the first failure.
     const cancellationResults = await Promise.allSettled([
-      Promise.resolve().then(() => cancelSftpOpsForSession(chatSessionId)),
-      Promise.resolve().then(() => dispatchCapabilityRpc.cancelChatSessionOperations?.(chatSessionId)),
+      Promise.resolve().then(() => waitForCancellation(
+        cancelSftpOpsForSession(chatSessionId),
+        "SFTP",
+      )),
+      Promise.resolve().then(() => waitForCancellation(
+        dispatchCapabilityRpc.cancelChatSessionOperations?.(chatSessionId),
+        "Capability",
+      )),
     ]);
     const cancellationFailure = cancellationResults.find(result => result.status === "rejected");
     if (cancellationFailure) {
@@ -2467,6 +2624,10 @@ module.exports = {
   getPermissionGrants,
   setChatSessionCancelled,
   applyChatSessionCancelled,
+  authorizeCattyPlan,
+  clearCattyPlanAuthorizations,
+  validateCattyPlanStep,
+  settleCattyPlanStep,
   checkCommandSafetyForShell,
   checkCommandSafetyCommonOnly,
   resolveSessionBlocklistShellKind,

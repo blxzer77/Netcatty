@@ -80,6 +80,9 @@ function createVaultService(ctx = {}) {
       return invokeVaultAgent("host.notes.set", {
         hostId: params.hostId,
         notes: params.notes,
+        ...(params.expectedNotesFingerprint
+          ? { expectedNotesFingerprint: params.expectedNotesFingerprint }
+          : {}),
       });
     },
     listNotes: async () => {

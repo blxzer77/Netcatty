@@ -102,7 +102,14 @@ async function proxyCattyExecToWorker({
 
 function registerCattyExecHandlers(ctx) {
   with (ctx) {
-  ipcMain.handle("netcatty:ai:exec", async (event, { sessionId, command, chatSessionId, expectedTarget }) => {
+  ipcMain.handle("netcatty:ai:authorize-plan", async (event, payload = {}) => {
+    if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    return mcpServerBridge.authorizeCattyPlan(payload);
+  });
+
+  ipcMain.handle("netcatty:ai:exec", async (event, payload = {}) => {
+    const { sessionId, command, chatSessionId, expectedTarget, approvalToken } = payload;
+    let executionTarget = expectedTarget;
     // Validate IPC sender (Issue #17)
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
@@ -111,9 +118,28 @@ function registerCattyExecHandlers(ctx) {
     if (mcpServerBridge.getPermissionMode() === "observer") {
       return { ok: false, error: "Execution blocked: permission mode is 'observer'" };
     }
-    if (chatSessionId && (!expectedTarget || typeof expectedTarget !== "object")) {
+    let authorization;
+    if (chatSessionId) {
+      authorization = mcpServerBridge.validateCattyPlanStep({
+        token: approvalToken,
+        chatSessionId,
+        toolName: "terminal_execute",
+        args: { sessionId, command },
+        sessionId,
+      });
+      if (!authorization.ok) return authorization;
+      executionTarget = authorization.targetIdentity;
+    }
+    if (chatSessionId && (!executionTarget || typeof executionTarget !== "object")) {
       return { ok: false, error: "Execution target identity is missing; submit a new plan." };
     }
+    const settleAuthorization = (result) => {
+      if (authorization?.ok) {
+        const success = Boolean(result && typeof result === "object" && result.ok !== false && !result.error);
+        mcpServerBridge.settleCattyPlanStep(approvalToken, success);
+      }
+      return result;
+    };
     const session = sessions?.get(sessionId);
     if (!session) {
       return proxyCattyExecToWorker({
@@ -123,8 +149,8 @@ function registerCattyExecHandlers(ctx) {
         sessionId,
         command,
         chatSessionId,
-        expectedTarget,
-      });
+        expectedTarget: executionTarget,
+      }).then(settleAuthorization);
     }
     const meta = mcpServerBridge.getSessionMeta(sessionId, chatSessionId) || {};
     const targetError = targetIdentityError({
@@ -132,8 +158,11 @@ function registerCattyExecHandlers(ctx) {
       ...session,
       protocol: session.protocol || session.type || meta.protocol,
       hostname: session.hostname || meta.hostname,
-    }, expectedTarget);
-    if (targetError) return { ok: false, error: targetError };
+    }, executionTarget);
+    if (targetError) {
+      if (authorization?.ok) mcpServerBridge.settleCattyPlanStep(approvalToken, false);
+      return { ok: false, error: targetError };
+    }
 
     // Honor the per-session execution lock so this IPC path does not race with
     // long-running background jobs started via terminal_start.
@@ -161,7 +190,7 @@ function registerCattyExecHandlers(ctx) {
     const withLockRelease = (factory) => {
       try {
         const result = factory();
-        return Promise.resolve(result).finally(releaseLock);
+        return Promise.resolve(result).then(settleAuthorization).finally(releaseLock);
       } catch (err) {
         releaseLock();
         return { ok: false, error: err?.message || String(err) };
@@ -340,7 +369,7 @@ function registerCattyExecHandlers(ctx) {
     }
   });
 
-  ipcMain.handle("netcatty:ai:capability", async (event, { rpcMethod, params, chatSessionId }) => {
+  ipcMain.handle("netcatty:ai:capability", async (event, { rpcMethod, params, chatSessionId, approvalToken }) => {
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
     }
@@ -350,8 +379,11 @@ function registerCattyExecHandlers(ctx) {
     return mcpServerBridge.dispatchBuiltinRpc(rpcMethod, {
       ...(params || {}),
       chatSessionId,
+      ...(approvalToken ? { approvalToken } : {}),
     }, {
       chatSessionId,
+      catty: true,
+      ...(approvalToken ? { cattyPlanToken: approvalToken } : {}),
     });
   });
   }

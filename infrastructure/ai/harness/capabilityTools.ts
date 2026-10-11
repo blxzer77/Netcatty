@@ -16,11 +16,14 @@ import {
 } from '../shared/toolExecutors';
 import { reserveSessionSlot, hostWriteQueueKey } from '../shared/sessionExecutionQueue';
 import {
+  clearApprovedPlans,
   commitToolCoveredByApprovedPlan,
   failToolCoveredByApprovedPlan,
+  getClaimedPlanAuthorizationToken,
   getClaimedPlanTargetIdentities,
   hasUnsafePlanCommand,
   proposePlan,
+  setApprovedPlanAuthorizationToken,
   type PlanDecision,
 } from '../shared/planGate';
 import type { PlanPreconditionResult, PlanStep } from './types';
@@ -137,11 +140,24 @@ async function invokeCapabilityRpc(
       })
     : null;
   try {
-    const request = Promise.resolve(bridge.aiCapability(rpcMethod, params, chatSessionId));
+    const approvalToken = typeof params.approvalToken === 'string' ? params.approvalToken : undefined;
+    const request = Promise.resolve(bridge.aiCapability(rpcMethod, params, chatSessionId, approvalToken));
     const result = await (cancellation ? Promise.race([request, cancellation]) : request);
     if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) {
-      await request.catch(() => {});
-      return { error: (result as { error?: string }).error || 'Capability cancellation was not acknowledged.' };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        request.then(() => true, () => true),
+        new Promise<boolean>(resolve => {
+          timer = setTimeout(() => resolve(false), 10000);
+        }),
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+      const error = (result as { error?: string }).error || 'Capability cancellation was not acknowledged.';
+      if (!settled) {
+        return { error: `${error} The main process has not confirmed that the operation stopped; the host remains locked.` };
+      }
+      return { error };
     }
     if (abortSignal?.aborted && !cancellation) {
       return { error: 'Capability cancellation is unavailable; the operation was allowed to settle before releasing the queue.' };
@@ -910,6 +926,21 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         };
       }
 
+      const authorization = await deps.bridge.aiAuthorizeCattyPlan?.({
+        chatSessionId,
+        planId: ctx.toolCallId,
+        steps,
+        targetIdentities,
+      });
+      if (!authorization?.ok || !authorization.token
+        || !setApprovedPlanAuthorizationToken(chatSessionId, ctx.toolCallId, authorization.token)) {
+        clearApprovedPlans(chatSessionId);
+        return {
+          approved: false,
+          reason: authorization?.error || 'The main process did not authorize this approved plan.',
+        };
+      }
+
       return {
         approved: true,
         planId: ctx.toolCallId,
@@ -1294,6 +1325,11 @@ function createCatalogTool(spec: CattyToolSpec) {
                   hostname: target.hostname,
                   protocol: target.protocol,
                 } : undefined,
+                approvalToken: getClaimedPlanAuthorizationToken(
+                  deps.chatSessionId,
+                  spec.toolName,
+                  args as Record<string, unknown>,
+                ),
               },
             );
             if (result.ok === false) {
@@ -1399,6 +1435,12 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
 
         let rpcParams = args as Record<string, unknown>;
+        const approvalToken = getClaimedPlanAuthorizationToken(
+          deps.chatSessionId,
+          spec.toolName,
+          rpcParams,
+        );
+        if (approvalToken) rpcParams = { ...rpcParams, approvalToken };
         const rpcContext = typeof deps.context === 'function' ? deps.context() : deps.context;
         const approvedTargets = getClaimedPlanTargetIdentities(
           deps.chatSessionId,
@@ -1423,6 +1465,9 @@ function createCatalogTool(spec: CattyToolSpec) {
           typeof deps.context === 'function' ? deps.context() : deps.context,
         );
         if (directTargetError) return { error: directTargetError };
+        if (spec.policy.write && deps.chatSessionId && deps.bridge.aiAuthorizeCattyPlan && !approvalToken) {
+          return { error: 'Main-process Catty plan authorization is unavailable; submit a new plan.' };
+        }
         if (spec.capabilityId === 'vault.host.notes.set') {
           const merged = await prepareMachineNotesWrite(deps, rpcParams, abortSignal);
           if ('error' in merged) return merged;

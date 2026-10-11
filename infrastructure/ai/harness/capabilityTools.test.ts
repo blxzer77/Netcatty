@@ -747,7 +747,10 @@ describe('capabilityTools terminal polling', () => {
 describe('capabilityTools submit_plan', () => {
   const planTools = (permissionMode: 'observer' | 'confirm' | 'auto', chatSessionId: string) =>
     createCattyToolsFromCatalog(
-      { aiCapability: async () => ({ ok: true }) },
+      {
+        aiCapability: async () => ({ ok: true }),
+        aiAuthorizeCattyPlan: async () => ({ ok: true, token: 'test-plan-token' }),
+      },
       { sessions: [
         { sessionId: 'session-a', hostId: 'host-a', hostname: 'host.example', label: 'host', protocol: 'ssh', connected: true },
       ] },
