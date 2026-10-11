@@ -149,12 +149,20 @@ function stripCattyInternalParams(args = {}) {
 function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity } = {}) {
   pruneCattyPlanAuthorizations();
   const entry = cattyPlanAuthorizations.get(token);
-  if (!entry || entry.chatSessionId !== chatSessionId || entry.claimed || entry.stopped) {
+  if (!entry || entry.chatSessionId !== chatSessionId || entry.stopped) {
     return { ok: false, error: "Catty plan authorization is missing, expired, or already in use." };
   }
   const step = entry.steps[entry.nextStepIndex];
-  if (!step || step.toolName !== toolName
-    || canonicalCattyValue(cattyPlanArgsForStep(step)) !== canonicalCattyValue(stripCattyInternalParams(args))) {
+  const isBatchChild = step?.toolName === "terminal_batch" && toolName === "terminal_execute";
+  if (!step || (!isBatchChild && entry.claimed) || (!isBatchChild && step.toolName !== toolName)
+    || (isBatchChild
+      ? (step.command || step.args?.command) !== args?.command
+        || !(Array.isArray(step.sessionIds)
+          ? step.sessionIds.includes(sessionId)
+          : typeof step.args?.sessionIds === "string" && (() => {
+              try { return JSON.parse(step.args.sessionIds).includes(sessionId); } catch { return false; }
+            })())
+      : canonicalCattyValue(cattyPlanArgsForStep(step)) !== canonicalCattyValue(stripCattyInternalParams(args)))) {
     entry.stopped = true;
     return { ok: false, error: "Execution is outside the approved Catty plan." };
   }
@@ -183,15 +191,32 @@ function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId
     ...(hostId && entry.notesFingerprints?.[hostId]
       ? { notesFingerprint: entry.notesFingerprints[hostId] }
       : {}),
+    ...(isBatchChild ? { batchChild: true } : {}),
   };
 }
 
-function settleCattyPlanStep(token, success) {
+function settleCattyPlanStep(token, success, options = {}) {
   const entry = cattyPlanAuthorizations.get(token);
   if (!entry || !entry.claimed) return false;
-  entry.claimed = false;
-  if (success) entry.nextStepIndex += 1;
-  else entry.stopped = true;
+  if (options.batchChild && success) {
+    const step = entry.steps[entry.nextStepIndex];
+    const completed = entry.batchCompletedSessions || new Set();
+    completed.add(options.sessionId);
+    entry.batchCompletedSessions = completed;
+    const expectedSessions = Array.isArray(step?.sessionIds)
+      ? step.sessionIds
+      : typeof step?.args?.sessionIds === "string"
+        ? (() => { try { return JSON.parse(step.args.sessionIds); } catch { return []; } })()
+        : [];
+    if (expectedSessions.every(sessionId => completed.has(sessionId))) {
+      entry.claimed = false;
+      entry.nextStepIndex += 1;
+    }
+  } else {
+    entry.claimed = false;
+    if (success) entry.nextStepIndex += 1;
+    else entry.stopped = true;
+  }
   if (entry.stopped || entry.nextStepIndex >= entry.steps.length) cattyPlanAuthorizations.delete(token);
   return true;
 }

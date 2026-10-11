@@ -464,6 +464,7 @@ interface HostCommandDeps {
   toolResultDedup?: ToolResultDedup;
   abortSignal?: AbortSignal;
   targetIdentities?: readonly ApprovedPlanTargetIdentity[];
+  approvalToken?: string;
 }
 
 /**
@@ -510,6 +511,7 @@ async function runSingleHostCommand(
         hostname: target.hostname,
         protocol: target.protocol,
       } : undefined,
+      approvalToken: ctx.approvalToken,
     },
   );
   const data = result.data ?? { stdout: '', stderr: '', exitCode: null };
@@ -983,6 +985,11 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
       const mode = isCompare || args.mode !== 'parallel' ? 'serial' : 'parallel';
       const stopOnError = !isCompare && (args.stopOnError === true || String(args.stopOnError) === 'true');
 
+      const batchApprovalToken = getClaimedPlanAuthorizationToken(
+        deps.chatSessionId,
+        spec.toolName,
+        args as Record<string, unknown>,
+      );
       const batch = await runCommandOnSessions({
         sessionIds: parsedIds.ids,
         command,
@@ -1002,6 +1009,7 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
               spec.toolName,
               args as Record<string, unknown>,
             ),
+            approvalToken: batchApprovalToken,
           },
           sessionId,
           command,

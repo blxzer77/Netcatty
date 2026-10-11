@@ -136,7 +136,9 @@ function registerCattyExecHandlers(ctx) {
     const settleAuthorization = (result) => {
       if (authorization?.ok) {
         const success = Boolean(result && typeof result === "object" && result.ok !== false && !result.error);
-        mcpServerBridge.settleCattyPlanStep(approvalToken, success);
+        mcpServerBridge.settleCattyPlanStep(approvalToken, success, authorization.batchChild
+          ? { batchChild: true, sessionId }
+          : undefined);
       }
       return result;
     };
