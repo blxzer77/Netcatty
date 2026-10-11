@@ -112,6 +112,7 @@ async function invokeCapabilityRpc(
   params: Record<string, unknown>,
   chatSessionId?: string,
   abortSignal?: AbortSignal,
+  onUnderlyingSettled?: () => void,
 ): Promise<unknown> {
   if (!bridge.aiCapability) {
     return { error: 'Capability bridge is unavailable in this environment.' };
@@ -141,7 +142,8 @@ async function invokeCapabilityRpc(
     : null;
   try {
     const approvalToken = typeof params.approvalToken === 'string' ? params.approvalToken : undefined;
-    const request = Promise.resolve(bridge.aiCapability(rpcMethod, params, chatSessionId, approvalToken));
+    const request = Promise.resolve(bridge.aiCapability(rpcMethod, params, chatSessionId, approvalToken))
+      .finally(() => onUnderlyingSettled?.());
     const result = await (cancellation ? Promise.race([request, cancellation]) : request);
     if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1299,6 +1301,7 @@ function createCatalogTool(spec: CattyToolSpec) {
         deps.context,
       );
       const slot = queueKey ? reserveSessionSlot(queueKey) : null;
+      let retainQueueSlot = false;
 
       try {
         const result = await (async () => {
@@ -1349,11 +1352,22 @@ function createCatalogTool(spec: CattyToolSpec) {
                   spec.toolName,
                   args as Record<string, unknown>,
                 ),
+                onUnderlyingSettled: () => {
+                  if (retainQueueSlot) {
+                    retainQueueSlot = false;
+                    slot?.release();
+                  }
+                },
               },
             );
             if (result.ok === false) {
               failToolCoveredByApprovedPlan(deps.chatSessionId, spec.toolName, args as Record<string, unknown>);
-              if (!result.data) return unwrap(result);
+              if (!result.data) {
+                return {
+                  ...unwrap(result),
+                  ...(result.retainQueueSlot ? { retainQueueSlot: true } : {}),
+                };
+              }
               const fittedFailure = {
                 error: fitLargeToolResultForModel({
                   result: result.error,
@@ -1371,6 +1385,7 @@ function createCatalogTool(spec: CattyToolSpec) {
                   chatSessionId: deps.chatSessionId,
                   toolOutputStore,
                 }),
+                ...(result.retainQueueSlot ? { retainQueueSlot: true } : {}),
               };
               if (writeFingerprint) toolResultDedup?.rememberCompletedWrite(writeFingerprint, fittedFailure);
               return fittedFailure;
@@ -1498,6 +1513,12 @@ function createCatalogTool(spec: CattyToolSpec) {
           rpcParams,
           deps.chatSessionId,
           abortSignal,
+          () => {
+            if (retainQueueSlot) {
+              retainQueueSlot = false;
+              slot?.release();
+            }
+          },
         );
         if (
           spec.capabilityId === 'terminal.start'
@@ -1665,6 +1686,16 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
         return fittedRaw;
         })();
+        retainQueueSlot = Boolean(
+          result
+          && typeof result === 'object'
+          && (result as { retainQueueSlot?: unknown }).retainQueueSlot === true,
+        ) || Boolean(
+          abortSignal?.aborted
+          && result
+          && typeof result === 'object'
+          && ((result as { ok?: unknown }).ok === false || typeof (result as { error?: unknown }).error === 'string'),
+        );
         if (spec.policy.write && deps.chatSessionId) {
           const failed = Boolean(result && typeof result === 'object' && (
             (result as { ok?: unknown }).ok === false
@@ -1682,7 +1713,7 @@ function createCatalogTool(spec: CattyToolSpec) {
         }
         return result;
       } finally {
-        slot?.release();
+        if (!retainQueueSlot) slot?.release();
       }
   }
 

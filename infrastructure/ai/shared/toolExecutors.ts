@@ -19,7 +19,7 @@ import { executeWebSearchProvider } from './webSearchProviders';
 /** Discriminated union returned by every shared executor. */
 export type ToolExecResult<T = unknown> =
   | { ok: true; data: T }
-  | { ok: false; error: string; data?: T };
+  | { ok: false; error: string; data?: T; retainQueueSlot?: boolean };
 
 // ---------------------------------------------------------------------------
 // Dependencies bundle
@@ -70,6 +70,7 @@ export async function executeTerminalExecute(
     abortSignal?: AbortSignal;
     expectedTarget?: { hostId?: string; hostname?: string; protocol?: string };
     approvalToken?: string;
+    onUnderlyingSettled?: () => void;
   } = {},
 ): Promise<ToolExecResult<{ stdout: string; stderr: string; exitCode: number | null }>> {
   const { bridge, context, commandBlocklist, permissionMode } = deps;
@@ -144,6 +145,10 @@ export async function executeTerminalExecute(
       options.expectedTarget,
       options.approvalToken,
     );
+    void executionRequest.then(
+      () => options.onUnderlyingSettled?.(),
+      () => options.onUnderlyingSettled?.(),
+    );
     result = await Promise.race([executionRequest, cancellationOutcome]);
   } finally {
     abortSignal?.removeEventListener('abort', cancelOnAbort);
@@ -163,7 +168,7 @@ export async function executeTerminalExecute(
       }
     }
   }
-  if (cancellationError) return { ok: false, error: cancellationError };
+  if (cancellationError) return { ok: false, error: cancellationError, retainQueueSlot: true };
   // Real execution failures (timeout, disconnect, no stream) have an `error` field
   if (!result.ok && result.error) {
     return {

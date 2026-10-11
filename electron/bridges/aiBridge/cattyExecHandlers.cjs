@@ -104,15 +104,15 @@ function registerCattyExecHandlers(ctx) {
   with (ctx) {
   ipcMain.handle("netcatty:ai:prepare-plan", async (event, payload = {}) => {
     if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
-    return mcpServerBridge.prepareCattyPlan(payload);
+    return mcpServerBridge.prepareCattyPlan({ ...payload, webContentsId: event.sender.id });
   });
   ipcMain.handle("netcatty:ai:approve-plan", async (event, payload = {}) => {
     if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
-    return mcpServerBridge.approveCattyPlan(payload);
+    return mcpServerBridge.approveCattyPlan({ ...payload, webContentsId: event.sender.id });
   });
   ipcMain.handle("netcatty:ai:authorize-plan", async (event, payload = {}) => {
     if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
-    return mcpServerBridge.authorizeCattyPlan(payload);
+    return mcpServerBridge.authorizeCattyPlan({ ...payload, webContentsId: event.sender.id });
   });
 
   ipcMain.handle("netcatty:ai:exec", async (event, payload = {}) => {

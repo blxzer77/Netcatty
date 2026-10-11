@@ -62,6 +62,12 @@ const DISCOVERY_SELF_HEAL_INTERVAL_MS = 15000;
 const cattyPlanAuthorizations = new Map();
 const cattyPendingPlans = new Map();
 const CATTY_PLAN_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
+const CATTY_WRITE_TOOLS = new Set([
+  "terminal_execute", "terminal_start", "terminal_stop", "terminal_batch",
+  "sftp_write_file", "sftp_download", "sftp_upload", "sftp_mkdir",
+  "sftp_delete", "sftp_rename", "sftp_chmod", "host_notes_set",
+  "portforward_start", "portforward_stop",
+]);
 
 function canonicalCattyValue(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -80,12 +86,7 @@ function pruneCattyPlanAuthorizations() {
 }
 
 function cattyNotesFingerprint(value) {
-  let hash = 2166136261;
-  for (const char of String(value || "")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
 }
 
 function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities } = {}) {
@@ -98,6 +99,17 @@ function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentit
   if (steps.some(step => !step || typeof step.toolName !== "string" || !step.args || typeof step.args !== "object")) {
     return "Catty plan steps must name a tool and structured arguments.";
   }
+  if (steps.some(step => !CATTY_WRITE_TOOLS.has(step.toolName))) {
+    return "Catty plan contains a tool that is not an approved Catty write capability.";
+  }
+  if (steps.some(step => typeof step.args.command === "string"
+    && typeof step.command === "string" && step.args.command !== step.command)) {
+    return "Catty plan command and structured command arguments do not match.";
+  }
+  if (steps.some(step => ["terminal_execute", "terminal_start", "terminal_batch"].includes(step.toolName)
+    && typeof step.args.command !== "string")) {
+    return "Catty terminal plan steps require a structured command argument.";
+  }
   if (steps.some(step => typeof step.command === "string" && /(?:\$\(|`|\$\{|\beval\b|\b(?:sh|bash|zsh|python|perl|ruby|node)\b|[\r\n;&|<>])/.test(step.command))) {
     return "Catty plan contains an unsafe command form.";
   }
@@ -105,10 +117,37 @@ function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentit
     || typeof identity.hostId !== "string" || typeof identity.hostname !== "string" || typeof identity.protocol !== "string")) {
     return "Catty plan target identities are incomplete.";
   }
+  const scopedSessionIds = getScopedSessionIds(chatSessionId);
+  if (scopedSessionIds.length === 0 || targetIdentities.some(identity => !scopedSessionIds.includes(identity.sessionId))) {
+    return "Catty plan target is outside the current chat session scope.";
+  }
+  const targetBySessionId = new Map(targetIdentities.map(identity => [identity.sessionId, identity]));
+  for (const step of steps) {
+    const stepSessionIds = Array.isArray(step.sessionIds)
+      ? step.sessionIds
+      : typeof step.args.sessionIds === "string"
+        ? (() => { try { return JSON.parse(step.args.sessionIds); } catch { return []; } })()
+        : [step.sessionId || step.args.sessionId].filter(Boolean);
+    if (stepSessionIds.some(sessionId => !targetBySessionId.has(sessionId))) {
+      return "Catty plan step target is missing from the approved identity snapshot.";
+    }
+    if (step.args.hostId && !targetIdentities.some(identity => identity.hostId === step.args.hostId)) {
+      return "Catty plan host target is missing from the approved identity snapshot.";
+    }
+  }
+  for (const identity of targetIdentities) {
+    const live = getSessionMeta(identity.sessionId, chatSessionId);
+    if (!live || live.connected !== true
+      || (live.hostId || live.savedHostId) !== identity.hostId
+      || String(live.hostname || "").trim().toLowerCase() !== identity.hostname.trim().toLowerCase()
+      || String(live.protocol || "").trim().toLowerCase() !== identity.protocol.trim().toLowerCase()) {
+      return "Catty plan target identity is stale or unavailable.";
+    }
+  }
   return null;
 }
 
-function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities } = {}) {
+function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities, webContentsId } = {}) {
   pruneCattyPlanAuthorizations();
   const error = validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities });
   if (error) return { ok: false, error };
@@ -118,25 +157,28 @@ function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities } = {
     planId,
     steps: steps.map(step => ({ ...step })),
     targetIdentities: targetIdentities.map(identity => ({ ...identity })),
+    webContentsId: Number.isInteger(webContentsId) ? webContentsId : null,
     approved: false,
     createdAt: Date.now(),
   });
   return { ok: true, proposalToken: token };
 }
 
-function approveCattyPlan({ chatSessionId, planId, proposalToken } = {}) {
+function approveCattyPlan({ chatSessionId, planId, proposalToken, webContentsId } = {}) {
   const entry = cattyPendingPlans.get(proposalToken);
-  if (!entry || entry.chatSessionId !== chatSessionId || entry.planId !== planId) {
+  if (!entry || entry.chatSessionId !== chatSessionId || entry.planId !== planId
+    || (entry.webContentsId !== null && entry.webContentsId !== webContentsId)) {
     return { ok: false, error: "Catty plan proposal is missing or does not match this chat." };
   }
   entry.approved = true;
   return { ok: true };
 }
 
-async function authorizeCattyPlan({ proposalToken } = {}) {
+async function authorizeCattyPlan({ proposalToken, webContentsId } = {}) {
   pruneCattyPlanAuthorizations();
   const proposal = cattyPendingPlans.get(proposalToken);
-  if (!proposal || proposal.approved !== true) {
+  if (!proposal || proposal.approved !== true
+    || (proposal.webContentsId !== null && proposal.webContentsId !== webContentsId)) {
     return { ok: false, error: "Catty plan has not been approved by the main-process plan registry." };
   }
   cattyPendingPlans.delete(proposalToken);
