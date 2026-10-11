@@ -86,7 +86,12 @@ function pruneCattyPlanAuthorizations() {
 }
 
 function cattyNotesFingerprint(value) {
-  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
 }
 
 function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities } = {}) {
