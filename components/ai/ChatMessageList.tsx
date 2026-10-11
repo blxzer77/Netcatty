@@ -30,6 +30,7 @@ import AgentActivityGroup from './AgentActivityGroup';
 import ToolCallGroup from './ToolCallGroup';
 import { CodexUserInputCard } from './CodexUserInputCard';
 import { CodebuddyElicitationCard } from './CodebuddyElicitationCard';
+import { PlanApprovalCard } from './PlanApprovalCard';
 import {
   VaultArtifactNavigationProvider,
   type VaultArtifactNavSection,
@@ -50,6 +51,13 @@ import {
   resolveApproval,
   type ApprovalRequest,
 } from '../../infrastructure/ai/shared/approvalGate';
+import {
+  onPlanProposed,
+  onPlanCleared,
+  replayPendingPlans,
+  resolvePlan,
+  type ProposedPlan,
+} from '../../infrastructure/ai/shared/planGate';
 import {
   onCodexAppServerInteraction,
   onCodexAppServerInteractionCleared,
@@ -191,6 +199,9 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   // Track pending approvals from the approval gate
   const [pendingApprovals, setPendingApprovals] = useState<Map<string, ApprovalRequest>>(new Map());
   const [resolvedApprovals, setResolvedApprovals] = useState<Map<string, boolean>>(new Map());
+  // Track the plan the agent is waiting on. A plan is the unit of approval for
+  // the Catty turn loop, so it renders in the flow instead of next to a tool.
+  const [pendingPlans, setPendingPlans] = useState<Map<string, ProposedPlan>>(new Map());
   const [pendingCodexInteractions, setPendingCodexInteractions] = useState<Map<string, CodexAppServerInteraction>>(new Map());
   const [pendingCodebuddyElicitations, setPendingCodebuddyElicitations] = useState<Map<string, CodebuddyElicitation>>(new Map());
 
@@ -213,6 +224,30 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   useEffect(() => {
     return onApprovalCleared((clearedIds) => {
       setPendingApprovals(prev => {
+        const m = new Map(prev);
+        for (const id of clearedIds) m.delete(id);
+        return m;
+      });
+    });
+  }, []);
+
+  // Subscribe to plan requests; replay covers a remount while a plan waits.
+  useEffect(() => {
+    const handler = (plan: ProposedPlan) => {
+      // A plan is actionable only while its authoritative chat session is
+      // active. Do not park a plan received during session switching and later
+      // let a stale card resolve it from another session.
+      if (!activeSessionId || plan.chatSessionId !== activeSessionId) return;
+      setPendingPlans(prev => new Map(prev).set(plan.planId, plan));
+    };
+    const unsub = onPlanProposed(handler);
+    replayPendingPlans(handler);
+    return unsub;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    return onPlanCleared((clearedIds) => {
+      setPendingPlans(prev => {
         const m = new Map(prev);
         for (const id of clearedIds) m.delete(id);
         return m;
@@ -284,6 +319,14 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
     setPendingApprovals(prev => { const m = new Map(prev); m.delete(toolCallId); return m; });
     setResolvedApprovals(prev => new Map(prev).set(request?.itemId ?? toolCallId, false));
   }, [pendingApprovals]);
+
+  const settlePlan = useCallback((planId: string, outcome: 'approved' | 'denied') => {
+    const plan = pendingPlans.get(planId);
+    if (!plan) return;
+    if (!activeSessionId || plan.chatSessionId !== activeSessionId) return;
+    resolvePlan(planId, { outcome }, activeSessionId);
+    setPendingPlans(prev => { const m = new Map(prev); m.delete(planId); return m; });
+  }, [activeSessionId, pendingPlans]);
 
   const handleCodexUserInput = useCallback((
     interactionId: string,
@@ -826,6 +869,21 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
             </ToolCallGroup>
           );
         })()}
+
+        {/* A plan the agent is waiting on: approve once, then execute. */}
+        {!hideToolCalls && Array.from(pendingPlans.entries())
+          .filter(([, plan]) => Boolean(activeSessionId) && plan.chatSessionId === activeSessionId)
+          .map(([planId, plan]) => (
+            <React.Profiler key={planId} {...getAIPanelProfilerProps('AIChatPanel.Plan.Approval')}>
+              <div>
+                <PlanApprovalCard
+                  plan={plan}
+                  onApprove={() => settlePlan(planId, 'approved')}
+                  onReject={() => settlePlan(planId, 'denied')}
+                />
+              </div>
+            </React.Profiler>
+          ))}
 
         {/* Standalone MCP/SDK approval requests (not tied to SDK tool calls) */}
         {!hideToolCalls && Array.from(pendingApprovals.entries())

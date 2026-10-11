@@ -45,6 +45,7 @@ function createPortForwardService(ctx = {}) {
       }
       return invokeVaultAgent("portforward.start", {
         ruleId: params.ruleId,
+        hostId: params.hostId,
         chatSessionId: params.chatSessionId,
       });
     },
@@ -54,6 +55,7 @@ function createPortForwardService(ctx = {}) {
       }
       return invokeVaultAgent("portforward.stop", {
         ruleId: params.ruleId,
+        hostId: params.hostId,
         chatSessionId: params.chatSessionId,
       });
     },

@@ -27,6 +27,7 @@ const PORT_FORWARD_CAPABILITIES = [
   {
     id: "portforward.tunnels.list",
     domain: "portforward",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "List active port forwarding tunnels.",
     policy: {
@@ -71,6 +72,7 @@ const PORT_FORWARD_CAPABILITIES = [
   {
     id: "portforward.start",
     domain: "portforward",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Start a port forwarding tunnel for a rule.",
     policy: {
@@ -91,6 +93,7 @@ const PORT_FORWARD_CAPABILITIES = [
   {
     id: "portforward.stop",
     domain: "portforward",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Stop an active port forwarding tunnel.",
     policy: {

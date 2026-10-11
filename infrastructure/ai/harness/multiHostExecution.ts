@@ -1,0 +1,327 @@
+/**
+ * Multi-host execution and comparison for the server-management agent.
+ *
+ * The agent manages a handful of hosts, so "run the same thing on each of them
+ * and tell me what differs" is a first-class task. This module owns that
+ * orchestration without touching a single host itself: the caller supplies the
+ * per-host runner, so the command path (blocklist, scope, bridge, output
+ * fitting, write replay) stays exactly the one `terminal.execute` uses.
+ *
+ * Two properties matter more than throughput:
+ *
+ * - **Failure isolation.** One host failing must not hide or corrupt the
+ *   others' results, so every host carries its own outcome.
+ * - **Host-level ordering.** A host is only ever running one command from this
+ *   agent at a time, which is enforced by the session queue the caller reserves
+ *   through here.
+ */
+
+export interface HostCommandOutcome {
+  sessionId: string;
+  ok: boolean;
+  error?: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  /** Handle id when the output was archived behind `tool_output_read`. */
+  handleId?: string;
+  /** Total characters before fitting, when known. */
+  totalChars?: number;
+}
+
+export interface BatchSummary {
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface BatchExecutionResult {
+  command: string;
+  mode: 'serial' | 'parallel';
+  hosts: HostCommandOutcome[];
+  summary: BatchSummary;
+  /** Set when the run stopped early in serial mode. */
+  stoppedEarly?: boolean;
+}
+
+export interface RunCommandOnSessionsInput {
+  sessionIds: readonly string[];
+  command: string;
+  mode?: 'serial' | 'parallel';
+  /** Stop after the first failing host (serial mode only). */
+  stopOnError?: boolean;
+  /** Reserve the host for this run so two panels cannot write it at once. */
+  reserveSlot?: (sessionId: string) => { ready: Promise<void>; release: () => void } | null;
+  signal?: AbortSignal;
+  runOnHost: (sessionId: string) => Promise<HostCommandOutcome>;
+}
+
+const MAX_COMPARE_LINES_PER_HOST = 20;
+
+const READ_ONLY_COMPARE_COMMAND = /^(?:sudo\s+)?(?:uname|uptime|df|du|free|vmstat|iostat|hostname|whoami|id|date|ls|stat|ps|top|ss|netstat|nginx\s+-v)(?:\s|$)/i;
+const SENSITIVE_COMPARE_TARGET = /(?:\.ssh|\/etc\/(?:shadow|passwd|group|gshadow)|authorized_keys|known_hosts|(?:^|[\s/])(?:\.env|credentials?|secrets?|tokens?|private[_-]?keys?)(?:[\s/]|$)|\/proc\/[^\s]+\/cmdline)/i;
+
+/**
+ * Compare is intentionally conservative: a shell command is not considered
+ * read-only merely because the tool is named compare. Reject shell composition,
+ * redirection and known mutators before allowing the fan-out.
+ */
+export function isReadOnlyCompareCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || /[\r\n;&|`$<>]/.test(trimmed)) return false;
+  if (SENSITIVE_COMPARE_TARGET.test(trimmed)) return false;
+  if (/(?:^|\s)(?:rm|mv|cp|mkdir|touch|chmod|chown|kill|reboot|shutdown|tee)(?:\s|$)/i.test(trimmed)) return false;
+  if (/(?:^|\s)ps\s+\S/i.test(trimmed)) return false;
+  if (/(?:sed|perl)\s+[^\n]*\s-i(?:\s|$)/i.test(trimmed)) return false;
+  if (/(?:systemctl|service)\s+(?:(?:\S+\s+)?(?:start|restart|reload|stop|enable|disable|mask|unmask)\b|(?:start|restart|reload|stop|enable|disable|mask|unmask)\s+\S+)/i.test(trimmed)) return false;
+  if (/\bnginx\s+-s\s+(?:reload|stop|quit)\b/i.test(trimmed)) return false;
+  if (/(?:ip|iptables|nft|ufw|firewall-cmd)\s+(?:route|link|addr|add|delete|del|insert|remove|flush|enable|disable)/i.test(trimmed)) return false;
+  return READ_ONLY_COMPARE_COMMAND.test(trimmed);
+}
+
+/**
+ * Run one command across several hosts.
+ *
+ * Serial mode is the default: the agent's turns are operator turns, and a
+ * serial run keeps the machines from being hammered at once and keeps the
+ * stop-on-error semantics meaningful. Parallel mode is opt-in for read-only
+ * fan-out.
+ */
+export async function runCommandOnSessions(
+  input: RunCommandOnSessionsInput,
+): Promise<BatchExecutionResult> {
+  const mode = input.mode === 'parallel' ? 'parallel' : 'serial';
+  const sessionIds = dedupe(input.sessionIds);
+  const stopOnError = input.stopOnError === true && mode === 'serial';
+  const hosts: HostCommandOutcome[] = [];
+  let stoppedEarly = false;
+
+  const runHost = async (sessionId: string): Promise<HostCommandOutcome> => {
+    const slot = input.reserveSlot?.(sessionId) ?? null;
+    try {
+      await waitForSlotOrAbort(slot?.ready, input.signal);
+      if (input.signal?.aborted) return cancelledOutcome(sessionId);
+      return await input.runOnHost(sessionId);
+    } catch (error) {
+      return {
+        sessionId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+      };
+    } finally {
+      slot?.release();
+    }
+  };
+
+  if (mode === 'parallel') {
+    const outcomes = await Promise.all(sessionIds.map(sessionId => runHost(sessionId)));
+    hosts.push(...outcomes);
+  } else {
+    for (const sessionId of sessionIds) {
+      const outcome = await runHost(sessionId);
+      hosts.push(outcome);
+      if (stopOnError && !outcome.ok) {
+        stoppedEarly = true;
+        break;
+      }
+    }
+  }
+
+  return {
+    command: input.command,
+    mode,
+    hosts,
+    summary: summarize(hosts),
+    ...(stoppedEarly ? { stoppedEarly } : {}),
+  };
+}
+
+export interface HostOutputComparison {
+  command: string;
+  /** True when every host that answered returned byte-identical output. */
+  identical: boolean;
+  /** Hosts grouped by their exact output, largest group first. */
+  groups: Array<{ members: string[]; lineCount: number }>;
+  /** Hosts whose output differs from the largest group. */
+  differingHosts: string[];
+  /** Bounded per-group detail: the lines that are unique to that group. */
+  differences: Array<{ members: string[]; lines: string[] }>;
+  conclusion: string;
+  hostsThatFailed: string[];
+}
+
+/**
+ * Compare the output of the same read across hosts.
+ *
+ * The comparison is deterministic on purpose: grouping by exact output plus the
+ * set of lines unique to a host gives the model a small, checkable artifact
+ * instead of N full outputs to hold in context.
+ */
+export function compareHostOutputs(
+  command: string,
+  hosts: readonly HostCommandOutcome[],
+): HostOutputComparison {
+  const answered = hosts.filter(host => host.ok);
+  const hostsThatFailed = hosts.filter(host => !host.ok).map(host => host.sessionId);
+  const byOutput = new Map<string, string[]>();
+  for (const host of answered) {
+    const key = comparisonText(host);
+    const members = byOutput.get(key) ?? [];
+    members.push(host.sessionId);
+    byOutput.set(key, members);
+  }
+
+  const groups = [...byOutput.entries()]
+    .map(([output, members]) => ({ members, lineCount: countLines(output) }))
+    .sort((a, b) => b.members.length - a.members.length || a.lineCount - b.lineCount);
+  const baselineHost = answered.find(host => (groups[0]?.members ?? []).includes(host.sessionId));
+  const baselineOutput = baselineHost ? comparisonText(baselineHost) : '';
+  const differences = groups.slice(1).map(group => {
+    const members = group.members;
+    const memberHost = answered.find(host => members.includes(host.sessionId));
+    const lines = memberHost ? boundedLineDiff(baselineOutput, comparisonText(memberHost)) : [];
+    return {
+      members,
+      lines: lines.slice(0, MAX_COMPARE_LINES_PER_HOST),
+    };
+  });
+
+  const differingHosts = groups.slice(1).flatMap(group => group.members);
+  const identical = answered.length > 0 && differingHosts.length === 0 && hostsThatFailed.length === 0;
+
+  return {
+    command,
+    identical,
+    groups,
+    differingHosts,
+    differences,
+    hostsThatFailed,
+    conclusion: buildConclusion({
+      total: hosts.length,
+      answered: answered.length,
+      identical,
+      differingHosts,
+      hostsThatFailed,
+    }),
+  };
+}
+
+function buildConclusion(input: {
+  total: number;
+  answered: number;
+  identical: boolean;
+  differingHosts: string[];
+  hostsThatFailed: string[];
+}): string {
+  if (input.answered === 0) {
+    return `No host answered: ${input.hostsThatFailed.join(', ') || 'unknown'} failed.`;
+  }
+  if (input.identical) {
+    return `All ${input.answered} hosts that answered returned identical output.`;
+  }
+  const parts: string[] = [];
+  const agreeing = input.answered - input.differingHosts.length;
+  if (input.differingHosts.length > 0) {
+    parts.push(`${agreeing} of ${input.answered} hosts agree`);
+    parts.push(`differing: ${input.differingHosts.join(', ')}`);
+  } else {
+    parts.push(`${agreeing} hosts answered the same`);
+  }
+  if (input.hostsThatFailed.length > 0) {
+    parts.push(`failed: ${input.hostsThatFailed.join(', ')}`);
+  }
+  return `${parts.join('; ')}.`;
+}
+
+function comparisonText(host: HostCommandOutcome): string {
+  return [
+    host.stdout,
+    host.stderr ? `[stderr]\n${host.stderr}` : '',
+    `[exitCode] ${host.exitCode ?? 'null'}`,
+  ].filter(Boolean).join('\n');
+}
+
+function splitLines(output: string): string[] {
+  return output.split('\n');
+}
+
+function countLines(output: string): number {
+  return output.length === 0 ? 0 : splitLines(output).length;
+}
+
+function boundedLineDiff(baseline: string, actual: string): string[] {
+  const baselineCounts = countLineValues(splitLines(baseline));
+  const actualCounts = countLineValues(splitLines(actual));
+  const removed: string[] = [];
+  const added: string[] = [];
+
+  for (const [line, count] of baselineCounts) {
+    const difference = count - (actualCounts.get(line) ?? 0);
+    for (let index = 0; index < difference; index += 1) removed.push(`[removed] ${line}`);
+  }
+  for (const [line, count] of actualCounts) {
+    const difference = count - (baselineCounts.get(line) ?? 0);
+    for (let index = 0; index < difference; index += 1) added.push(`[added] ${line}`);
+  }
+  return [...removed, ...added];
+}
+
+function countLineValues(lines: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
+  return counts;
+}
+
+function dedupe(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0 || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+  }
+  return result;
+}
+
+async function waitForSlotOrAbort(
+  ready: Promise<void> | undefined,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (!ready || !signal || signal.aborted) {
+    if (signal?.aborted) return;
+    await ready;
+    return;
+  }
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<void>(resolve => {
+    onAbort = resolve;
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([ready, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function cancelledOutcome(sessionId: string): HostCommandOutcome {
+  return {
+    sessionId,
+    ok: false,
+    error: 'Tool call cancelled.',
+    exitCode: null,
+    stdout: '',
+    stderr: '',
+  };
+}
+
+function summarize(hosts: readonly HostCommandOutcome[]): BatchSummary {
+  return {
+    total: hosts.length,
+    succeeded: hosts.filter(host => host.ok).length,
+    failed: hosts.filter(host => !host.ok).length,
+  };
+}

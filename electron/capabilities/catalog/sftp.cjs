@@ -18,6 +18,9 @@ function sftpCapability(id, description, policyOverrides, surfaces) {
       bypassesChatCancel: true,
       ...policyOverrides,
     },
+    // Every SFTP capability is part of the server-ops toolset: the agent moves
+    // files and configuration between the hosts it manages.
+    agentToolsets: ["server-ops"],
     surfaces,
   };
 }

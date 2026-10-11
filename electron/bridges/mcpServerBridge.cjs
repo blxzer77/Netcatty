@@ -59,6 +59,292 @@ function getActiveCliDiscoveryFilePath() {
 let discoverySelfHealTimer = null;
 const DISCOVERY_SELF_HEAL_INTERVAL_MS = 15000;
 
+const cattyPlanAuthorizations = new Map();
+const cattyPendingPlans = new Map();
+const cattyWebContentsChatScopes = new Map();
+const CATTY_PLAN_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
+const CATTY_WRITE_TOOLS = new Set([
+  "terminal_execute", "terminal_start", "terminal_stop", "terminal_batch",
+  "sftp_write_file", "sftp_download", "sftp_upload", "sftp_mkdir",
+  "sftp_delete", "sftp_rename", "sftp_chmod", "host_notes_set",
+  "portforward_start", "portforward_stop",
+]);
+
+function canonicalCattyValue(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalCattyValue).join(",")}]`;
+  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalCattyValue(value[key])}`).join(",")}}`;
+}
+
+function bindCattyWebContentsChat(webContentsId, chatSessionId) {
+  if (!Number.isInteger(webContentsId) || typeof chatSessionId !== "string" || !chatSessionId) return false;
+  let scopes = cattyWebContentsChatScopes.get(webContentsId);
+  if (!scopes) {
+    scopes = new Set();
+    cattyWebContentsChatScopes.set(webContentsId, scopes);
+  }
+  scopes.add(chatSessionId);
+  return true;
+}
+
+function isCattyWebContentsChatBound(webContentsId, chatSessionId) {
+  return Number.isInteger(webContentsId)
+    && typeof chatSessionId === "string"
+    && cattyWebContentsChatScopes.get(webContentsId)?.has(chatSessionId) === true;
+}
+
+function pruneCattyPlanAuthorizations() {
+  const cutoff = Date.now() - CATTY_PLAN_AUTH_TTL_MS;
+  for (const [token, entry] of cattyPlanAuthorizations) {
+    if (entry.createdAt < cutoff) cattyPlanAuthorizations.delete(token);
+  }
+  for (const [token, entry] of cattyPendingPlans) {
+    if (entry.createdAt < cutoff) cattyPendingPlans.delete(token);
+  }
+}
+
+function cattyNotesFingerprint(value) {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities } = {}) {
+  if (typeof chatSessionId !== "string" || !chatSessionId
+    || typeof planId !== "string" || !planId
+    || !Array.isArray(steps) || steps.length === 0
+    || !Array.isArray(targetIdentities) || targetIdentities.length === 0) {
+    return "A complete Catty plan proposal is required.";
+  }
+  if (steps.some(step => !step || typeof step.toolName !== "string" || !step.args || typeof step.args !== "object")) {
+    return "Catty plan steps must name a tool and structured arguments.";
+  }
+  if (steps.some(step => !CATTY_WRITE_TOOLS.has(step.toolName))) {
+    return "Catty plan contains a tool that is not an approved Catty write capability.";
+  }
+  if (steps.some(step => typeof step.args.command === "string"
+    && typeof step.command === "string" && step.args.command !== step.command)) {
+    return "Catty plan command and structured command arguments do not match.";
+  }
+  if (steps.some(step => ["terminal_execute", "terminal_start", "terminal_batch"].includes(step.toolName)
+    && typeof step.args.command !== "string")) {
+    return "Catty terminal plan steps require a structured command argument.";
+  }
+  if (steps.some(step => typeof step.command === "string" && /(?:\$\(|`|\$\{|\beval\b|\b(?:sh|bash|zsh|python|perl|ruby|node)\b|[\r\n;&|<>])/.test(step.command))) {
+    return "Catty plan contains an unsafe command form.";
+  }
+  if (targetIdentities.some(identity => !identity || typeof identity.sessionId !== "string"
+    || typeof identity.hostId !== "string" || typeof identity.hostname !== "string" || typeof identity.protocol !== "string")) {
+    return "Catty plan target identities are incomplete.";
+  }
+  const scopedSessionIds = getScopedSessionIds(chatSessionId);
+  if (scopedSessionIds.length === 0 || targetIdentities.some(identity => !scopedSessionIds.includes(identity.sessionId))) {
+    return "Catty plan target is outside the current chat session scope.";
+  }
+  const targetBySessionId = new Map(targetIdentities.map(identity => [identity.sessionId, identity]));
+  for (const step of steps) {
+    const stepSessionIds = Array.isArray(step.sessionIds)
+      ? step.sessionIds
+      : typeof step.args.sessionIds === "string"
+        ? (() => { try { return JSON.parse(step.args.sessionIds); } catch { return []; } })()
+        : [step.sessionId || step.args.sessionId].filter(Boolean);
+    if (stepSessionIds.some(sessionId => !targetBySessionId.has(sessionId))) {
+      return "Catty plan step target is missing from the approved identity snapshot.";
+    }
+    if (step.args.hostId && !targetIdentities.some(identity => identity.hostId === step.args.hostId)) {
+      return "Catty plan host target is missing from the approved identity snapshot.";
+    }
+  }
+  for (const identity of targetIdentities) {
+    const live = getSessionMeta(identity.sessionId, chatSessionId);
+    if (!live || live.connected !== true
+      || (live.hostId || live.savedHostId) !== identity.hostId
+      || String(live.hostname || "").trim().toLowerCase() !== identity.hostname.trim().toLowerCase()
+      || String(live.protocol || "").trim().toLowerCase() !== identity.protocol.trim().toLowerCase()) {
+      return "Catty plan target identity is stale or unavailable.";
+    }
+  }
+  return null;
+}
+
+function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities, webContentsId } = {}) {
+  pruneCattyPlanAuthorizations();
+  if (!Number.isInteger(webContentsId)) {
+    return { ok: false, error: "Catty plan must be created by a bound renderer." };
+  }
+  const error = validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities });
+  if (error) return { ok: false, error };
+  const token = crypto.randomBytes(32).toString("hex");
+  cattyPendingPlans.set(token, {
+    chatSessionId,
+    planId,
+    steps: steps.map(step => ({ ...step })),
+    targetIdentities: targetIdentities.map(identity => ({ ...identity })),
+    webContentsId: Number.isInteger(webContentsId) ? webContentsId : null,
+    approved: false,
+    createdAt: Date.now(),
+  });
+  return { ok: true, proposalToken: token };
+}
+
+function approveCattyPlan({ chatSessionId, planId, proposalToken, webContentsId } = {}) {
+  const entry = cattyPendingPlans.get(proposalToken);
+  if (!entry || entry.chatSessionId !== chatSessionId || entry.planId !== planId
+    || entry.webContentsId !== webContentsId) {
+    return { ok: false, error: "Catty plan proposal is missing or does not match this chat." };
+  }
+  entry.approved = true;
+  return { ok: true };
+}
+
+async function authorizeCattyPlan({ proposalToken, webContentsId } = {}) {
+  pruneCattyPlanAuthorizations();
+  const proposal = cattyPendingPlans.get(proposalToken);
+  if (!proposal || proposal.approved !== true
+    || proposal.webContentsId !== webContentsId
+    || !isCattyWebContentsChatBound(webContentsId, proposal?.chatSessionId)) {
+    return { ok: false, error: "Catty plan has not been approved by the main-process plan registry." };
+  }
+  cattyPendingPlans.delete(proposalToken);
+  const { chatSessionId, planId, steps, targetIdentities } = proposal;
+  const notesFingerprints = {};
+  for (const step of steps) {
+    if (step?.toolName !== "host_notes_set" && step?.toolName !== "vault_host_notes_set") continue;
+    const hostId = step?.args?.hostId || step?.hostId;
+    if (typeof hostId !== "string" || typeof invokeVaultAgentFn !== "function") {
+      return { ok: false, error: "Host notes authorization requires a main-process notes snapshot." };
+    }
+    const current = await invokeVaultAgentFn("host.notes.get", { hostId });
+    if (!current || current.ok === false || typeof current.notes !== "string") {
+      return { ok: false, error: "Host notes could not be snapshotted before authorization." };
+    }
+    notesFingerprints[hostId] = cattyNotesFingerprint(current.notes);
+  }
+  const token = crypto.randomBytes(32).toString("hex");
+  cattyPlanAuthorizations.set(token, {
+    chatSessionId,
+    planId,
+    steps,
+    targetIdentities,
+    webContentsId: proposal.webContentsId,
+    notesFingerprints,
+    nextStepIndex: 0,
+    claimed: false,
+    createdAt: Date.now(),
+  });
+  return { ok: true, token };
+}
+
+function clearCattyPlanAuthorizations(chatSessionId) {
+  for (const [token, entry] of cattyPlanAuthorizations) {
+    if (entry.chatSessionId === chatSessionId) cattyPlanAuthorizations.delete(token);
+  }
+  for (const [token, entry] of cattyPendingPlans) {
+    if (entry.chatSessionId === chatSessionId) cattyPendingPlans.delete(token);
+  }
+}
+
+function cattyPlanArgsForStep(step) {
+  if (step?.args && typeof step.args === "object" && !Array.isArray(step.args)) return step.args;
+  const args = {};
+  if (step?.sessionId) args.sessionId = step.sessionId;
+  if (step?.sessionIds) args.sessionIds = step.sessionIds;
+  if (step?.command) args.command = step.command;
+  if (step?.hostId) args.hostId = step.hostId;
+  return args;
+}
+
+function stripCattyInternalParams(args = {}) {
+  const copy = { ...args };
+  delete copy.approvalToken;
+  delete copy.expectedHostId;
+  delete copy.expectedHostname;
+  delete copy.expectedProtocol;
+  delete copy.expectedNotesFingerprint;
+  delete copy.chatSessionId;
+  return copy;
+}
+
+function validateCattyPlanStep({ token, chatSessionId, toolName, args, sessionId, targetIdentity, webContentsId, claim = true } = {}) {
+  pruneCattyPlanAuthorizations();
+  const entry = cattyPlanAuthorizations.get(token);
+  if (!entry || entry.chatSessionId !== chatSessionId
+    || entry.webContentsId !== webContentsId
+    || entry.stopped) {
+    return { ok: false, error: "Catty plan authorization is missing, expired, or already in use." };
+  }
+  const step = entry.steps[entry.nextStepIndex];
+  const isBatchChild = step?.toolName === "terminal_batch" && toolName === "terminal_execute";
+  if (!step || (!isBatchChild && entry.claimed) || (!isBatchChild && step.toolName !== toolName)
+    || (isBatchChild
+      ? (step.command || step.args?.command) !== args?.command
+        || !(Array.isArray(step.sessionIds)
+          ? step.sessionIds.includes(sessionId)
+          : typeof step.args?.sessionIds === "string" && (() => {
+              try { return JSON.parse(step.args.sessionIds).includes(sessionId); } catch { return false; }
+            })())
+      : canonicalCattyValue(cattyPlanArgsForStep(step)) !== canonicalCattyValue(stripCattyInternalParams(args)))) {
+    entry.stopped = true;
+    return { ok: false, error: "Execution is outside the approved Catty plan." };
+  }
+  const expected = entry.targetIdentities.find(identity =>
+    (sessionId && identity.sessionId === sessionId)
+    || (typeof args?.sessionIds === "string" && (() => {
+      try { return JSON.parse(args.sessionIds).includes(identity.sessionId); } catch { return false; }
+    })())
+    || (Array.isArray(args?.sessionIds) && args.sessionIds.includes(identity.sessionId))
+    || (args?.hostId && identity.hostId === args.hostId),
+  );
+  if (!expected || (targetIdentity && (
+    targetIdentity.hostId !== expected.hostId
+    || String(targetIdentity.hostname || "").toLowerCase() !== expected.hostname.toLowerCase()
+    || String(targetIdentity.protocol || "").toLowerCase() !== expected.protocol.toLowerCase()
+  ))) {
+    entry.stopped = true;
+    return { ok: false, error: "Approved Catty plan target identity changed." };
+  }
+  if (claim) entry.claimed = true;
+  const hostId = args?.hostId || expected.hostId;
+  return {
+    ok: true,
+    entry,
+    targetIdentity: expected,
+    ...(hostId && entry.notesFingerprints?.[hostId]
+      ? { notesFingerprint: entry.notesFingerprints[hostId] }
+      : {}),
+    ...(isBatchChild ? { batchChild: true } : {}),
+  };
+}
+
+function settleCattyPlanStep(token, success, options = {}) {
+  const entry = cattyPlanAuthorizations.get(token);
+  if (!entry || !entry.claimed) return false;
+  if (options.batchChild && success) {
+    const step = entry.steps[entry.nextStepIndex];
+    const completed = entry.batchCompletedSessions || new Set();
+    completed.add(options.sessionId);
+    entry.batchCompletedSessions = completed;
+    const expectedSessions = Array.isArray(step?.sessionIds)
+      ? step.sessionIds
+      : typeof step?.args?.sessionIds === "string"
+        ? (() => { try { return JSON.parse(step.args.sessionIds); } catch { return []; } })()
+        : [];
+    if (expectedSessions.every(sessionId => completed.has(sessionId))) {
+      entry.claimed = false;
+      entry.nextStepIndex += 1;
+    }
+  } else {
+    entry.claimed = false;
+    if (success) entry.nextStepIndex += 1;
+    else entry.stopped = true;
+  }
+  if (entry.stopped || entry.nextStepIndex >= entry.steps.length) cattyPlanAuthorizations.delete(token);
+  return true;
+}
+
 // Track which sockets have completed authentication
 const authenticatedSockets = new WeakSet();
 // Sockets authenticated with the External MCP token (or that used the reserved scope).
@@ -1604,6 +1890,10 @@ const dispatchCapabilityRpc = createCapabilityRpcDispatcher({
   getApprovalTarget,
   hasSessionApproval: (socket) => Boolean(socket && sessionApprovedExternalSockets.has(socket)),
   USER_DENIED_MESSAGE,
+  getScopedSessionIds,
+  getSessionMeta,
+  validateCattyPlanStep,
+  settleCattyPlanStep,
   listPortForwards: () => listActivePortForwards(),
   sessionService,
   captureHostOpenScope: (chatSessionId) => ({
@@ -1948,6 +2238,17 @@ function cancelWorkerBackgroundJobsForSession(chatSessionId) {
   }
 }
 
+function waitForCancellation(requestPromise, label) {
+  const timeoutMs = Math.max(1000, Math.min(commandTimeoutMs, 10000));
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} cancellation did not settle before the deadline.`)), timeoutMs);
+  });
+  return Promise.race([Promise.resolve(requestPromise), timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function waitForWorkerCleanup(requestPromise) {
   const timeoutMs = Math.max(1, Math.min(commandTimeoutMs, 5000));
   let timer = null;
@@ -2053,6 +2354,24 @@ async function dispatch(method, params, approvalContext = {}) {
   const sessionWriteLockId = (capability?.id === "terminal.execute" || capability?.id === "terminal.start")
     ? params?.sessionId
     : null;
+  if (params?.expectedHostId && params?.sessionId) {
+    const liveSession = sessions?.get(params.sessionId);
+    if (!liveSession || liveSession.hostId !== params.expectedHostId) {
+      return { ok: false, error: "Execution target host identity changed; submit a new plan." };
+    }
+    if (params.expectedHostname) {
+      if (!liveSession.hostname
+        || String(liveSession.hostname).trim().toLowerCase() !== String(params.expectedHostname).trim().toLowerCase()) {
+        return { ok: false, error: "Execution target hostname changed or is incomplete; submit a new plan." };
+      }
+    }
+    if (params.expectedProtocol) {
+      if (!liveSession.protocol
+        || String(liveSession.protocol).toLowerCase() !== String(params.expectedProtocol).toLowerCase()) {
+        return { ok: false, error: "Execution target protocol changed or is incomplete; submit a new plan." };
+      }
+    }
+  }
   pruneCompletedBackgroundJobs();
 
   const approvalTarget = getApprovalTarget(params);
@@ -2322,17 +2641,38 @@ function getPermissionGrants() {
   return permissionGrantsSnapshot;
 }
 
-function applyChatSessionCancelled(chatSessionId, cancelled) {
+async function applyChatSessionCancelled(chatSessionId, cancelled) {
   if (!chatSessionId || typeof chatSessionId !== "string") {
     throw new Error("chatSessionId is required");
   }
   if (cancelled) {
     setChatSessionCancelled(chatSessionId, true);
+    clearCattyPlanAuthorizations(chatSessionId);
     cancelPtyExecsForSession(chatSessionId);
     cancelBackgroundJobsForSession(chatSessionId);
     cancelWorkerBackgroundJobsForSession(chatSessionId);
     clearPendingApprovals(chatSessionId);
-    void cancelSftpOpsForSession(chatSessionId);
+    // Do not acknowledge cancellation until tracked SFTP operations and
+    // capability-owned side effects have received and completed their
+    // cancellation callbacks. The renderer uses this acknowledgement to keep
+    // its operation queue occupied. Fan out both cancellation paths even when
+    // one native operation reports a failure, then surface the first failure.
+    const cancellationResults = await Promise.allSettled([
+      Promise.resolve().then(() => waitForCancellation(
+        cancelSftpOpsForSession(chatSessionId),
+        "SFTP",
+      )),
+      Promise.resolve().then(() => waitForCancellation(
+        dispatchCapabilityRpc.cancelChatSessionOperations?.(chatSessionId),
+        "Capability",
+      )),
+    ]);
+    const cancellationFailure = cancellationResults.find(result => result.status === "rejected");
+    if (cancellationFailure) {
+      throw cancellationFailure.reason instanceof Error
+        ? cancellationFailure.reason
+        : new Error(String(cancellationFailure.reason));
+    }
   } else {
     setChatSessionCancelled(chatSessionId, false);
   }
@@ -2433,6 +2773,14 @@ module.exports = {
   getPermissionGrants,
   setChatSessionCancelled,
   applyChatSessionCancelled,
+  prepareCattyPlan,
+  approveCattyPlan,
+  authorizeCattyPlan,
+  clearCattyPlanAuthorizations,
+  bindCattyWebContentsChat,
+  isCattyWebContentsChatBound,
+  validateCattyPlanStep,
+  settleCattyPlanStep,
   checkCommandSafetyForShell,
   checkCommandSafetyCommonOnly,
   resolveSessionBlocklistShellKind,

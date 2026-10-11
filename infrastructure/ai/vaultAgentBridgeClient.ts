@@ -176,6 +176,15 @@ function resolveVaultImportFormat(raw: unknown): VaultImportFormat | 'auto' | { 
   };
 }
 
+function notesFingerprint(value: string): string {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
 export function sanitizePortForwardRuleForAgent(rule: PortForwardingRule): Record<string, unknown> {
   return {
     id: rule.id,
@@ -1000,6 +1009,12 @@ export async function handleVaultAgentOp(
       const notes = typeof params.notes === 'string' ? params.notes : '';
       const host = deps.getHosts().find((entry) => entry.id === hostId);
       if (!host) return { ok: false, error: `Host "${hostId}" was not found.` };
+      if (
+        typeof params.expectedNotesFingerprint === 'string'
+        && notesFingerprint(host.notes || '') !== params.expectedNotesFingerprint
+      ) {
+        return { ok: false, error: 'Host notes changed after plan approval; submit a new plan.' };
+      }
       deps.updateHostNotes(hostId, notes);
       return { ok: true, hostId };
     }
@@ -1472,9 +1487,14 @@ export async function handleVaultAgentOp(
     }
     case 'portforward.start': {
       const ruleId = String(params.ruleId || '');
+      const requestedHostId = typeof params.hostId === 'string' ? params.hostId : '';
       const rule = deps.getPortForwardingRules().find((entry) => entry.id === ruleId);
       if (!rule) return { ok: false, error: `Port forwarding rule "${ruleId}" was not found.` };
+      if (!requestedHostId) return { ok: false, error: 'hostId is required for port forwarding.' };
       if (!rule.hostId) return { ok: false, error: 'Rule has no associated host.' };
+      if (requestedHostId !== rule.hostId) {
+        return { ok: false, error: `Port forwarding rule "${ruleId}" belongs to a different host.` };
+      }
       const effectiveHosts = deps.getHosts().map((host) => deps.resolveEffectiveHost(host));
       const validatedHost = validatePortForwardingHost(effectiveHosts, rule.hostId);
       if (!validatedHost.ok) return validatedHost;
@@ -1502,6 +1522,13 @@ export async function handleVaultAgentOp(
     }
     case 'portforward.stop': {
       const ruleId = String(params.ruleId || '');
+      const requestedHostId = typeof params.hostId === 'string' ? params.hostId : '';
+      const rule = deps.getPortForwardingRules().find((entry) => entry.id === ruleId);
+      if (!rule) return { ok: false, error: `Port forwarding rule "${ruleId}" was not found.` };
+      if (!requestedHostId) return { ok: false, error: 'hostId is required for port forwarding.' };
+      if (requestedHostId !== rule.hostId) {
+        return { ok: false, error: `Port forwarding rule "${ruleId}" belongs to a different host.` };
+      }
       const result = await deps.stopRuleTunnels(ruleId);
       if (!result.success) {
         return { ok: false, error: result.error || 'Failed to stop port forwarding tunnel.' };

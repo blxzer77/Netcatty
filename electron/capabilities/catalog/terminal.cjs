@@ -7,6 +7,7 @@ const TERMINAL_CAPABILITIES = [
   {
     id: "terminal.execute",
     domain: "terminal",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Execute a short command in a terminal session and wait for completion.",
     policy: {
@@ -27,6 +28,7 @@ const TERMINAL_CAPABILITIES = [
   {
     id: "terminal.start",
     domain: "terminal",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Start a long-running command in a terminal session.",
     policy: {
@@ -47,6 +49,7 @@ const TERMINAL_CAPABILITIES = [
   {
     id: "terminal.poll",
     domain: "terminal",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Poll incremental output from a long-running terminal job.",
     policy: {
@@ -67,6 +70,7 @@ const TERMINAL_CAPABILITIES = [
   {
     id: "terminal.stop",
     domain: "terminal",
+    agentToolsets: ["server-ops"],
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description: "Stop a long-running terminal job.",
     policy: {

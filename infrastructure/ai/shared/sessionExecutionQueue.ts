@@ -116,6 +116,17 @@ export async function chainBySessionKey<T>(key: string, task: () => Promise<T>):
   }
 }
 
+/**
+ * Queue key for host writes.
+ *
+ * Deliberately not scoped by chat session: two panels driving the same host
+ * must not interleave their writes. The main-process session mutex stays as
+ * defense-in-depth for paths that do not come through this queue.
+ */
+export function hostWriteQueueKey(hostId: string): string {
+  return `host:${hostId}`;
+}
+
 /** Test-only: inspect the live queue. */
 export function getSessionExecutionQueueSizeForTests(): number {
   return queues.size;

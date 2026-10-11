@@ -7,6 +7,8 @@ const { createVaultService } = require("../../capabilities/services/vaultService
 const { createPortForwardService } = require("../../capabilities/services/portforwardService.cjs");
 const { createSessionService } = require("../../capabilities/services/sessionService.cjs");
 
+const CANCELLATION_SETTLEMENT_TIMEOUT_MS = 5000;
+
 const UNROUTED = Symbol("capability-rpc-unrouted");
 
 const SERVICE_BINDINGS = Object.freeze({
@@ -86,6 +88,8 @@ function createCapabilityRpcDispatcher(deps) {
     isChatSessionCancelled,
     requestApprovalFromRenderer,
     USER_DENIED_MESSAGE,
+    getScopedSessionIds,
+    getSessionMeta,
   } = deps;
 
   const vaultService = createVaultService({ invokeVaultAgent });
@@ -105,8 +109,47 @@ function createCapabilityRpcDispatcher(deps) {
     portforward: portforwardService,
     session: sessionService,
   };
+  const activeChatCancellations = new Map();
+  const activePortForwardStarts = new Set();
 
-  return async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
+  const registerChatCancellation = (chatSessionId, cancel) => {
+    if (!chatSessionId || typeof cancel !== "function") return () => {};
+    let cancellations = activeChatCancellations.get(chatSessionId);
+    if (!cancellations) {
+      cancellations = new Set();
+      activeChatCancellations.set(chatSessionId, cancellations);
+    }
+    cancellations.add(cancel);
+    return () => {
+      cancellations.delete(cancel);
+      if (cancellations.size === 0) activeChatCancellations.delete(chatSessionId);
+    };
+  };
+
+  const awaitOperationSettlement = async (operationPromise) => {
+    if (!operationPromise) return true;
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve(operationPromise).then(() => true, () => true),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), CANCELLATION_SETTLEMENT_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const cancelChatSessionOperations = async (chatSessionId) => {
+    const cancellations = activeChatCancellations.get(chatSessionId);
+    if (!cancellations || cancellations.size === 0) return;
+    const results = await Promise.allSettled([...cancellations].map(cancel => Promise.resolve().then(cancel)));
+    const failure = results.find(result => result.status === "rejected");
+    if (failure) throw failure.reason instanceof Error ? failure.reason : new Error(String(failure.reason));
+  };
+
+  const dispatchCapabilityRpc = async function dispatchCapabilityRpc(rpcMethod, params = {}, approvalContext = {}) {
     if (typeof rpcMethod !== "string" || rpcMethod.startsWith("netcatty/")) {
       return UNROUTED;
     }
@@ -128,6 +171,62 @@ function createCapabilityRpcDispatcher(deps) {
     const binding = SERVICE_BINDINGS[capability.id];
     if (!binding) {
       return UNROUTED;
+    }
+    const requiresTrustedChatSession = surface === CAPABILITY_SURFACES.GLOBAL
+      && ["vault.host.notes.get", "vault.host.notes.set", "portforward.start", "portforward.stop"].includes(capability.id);
+    if (requiresTrustedChatSession && typeof approvalContext.chatSessionId !== "string") {
+      return { ok: false, error: "A trusted Catty chat scope is required for this capability." };
+    }
+    const trustedChatSessionId = typeof approvalContext.chatSessionId === "string"
+      ? approvalContext.chatSessionId
+      : surface === CAPABILITY_SURFACES.GLOBAL
+        ? undefined
+        : typeof params?.chatSessionId === "string" ? params.chatSessionId : undefined;
+    let scopedParams = trustedChatSessionId
+      ? { ...params, chatSessionId: trustedChatSessionId }
+      : params;
+    let cattyAuthorization;
+    if (approvalContext.catty === true && capability.policy?.write) {
+      if (typeof approvalContext.cattyPlanToken !== "string" || typeof trustedChatSessionId !== "string") {
+        return { ok: false, error: "A main-process Catty plan authorization is required." };
+      }
+      const cattyToolName = getMcpToolNameForRpcMethod(rpcMethod, surface) || capability.id;
+      cattyAuthorization = deps.validateCattyPlanStep
+        ? deps.validateCattyPlanStep({
+            token: approvalContext.cattyPlanToken,
+            chatSessionId: trustedChatSessionId,
+            toolName: cattyToolName,
+            args: scopedParams,
+            sessionId: scopedParams.sessionId,
+            webContentsId: approvalContext.webContentsId,
+            claim: false,
+          })
+        : { ok: false, error: "Catty plan authorization is unavailable." };
+      if (!cattyAuthorization.ok) return cattyAuthorization;
+      scopedParams = {
+        ...scopedParams,
+        expectedHostId: cattyAuthorization.targetIdentity.hostId,
+        expectedHostname: cattyAuthorization.targetIdentity.hostname,
+        expectedProtocol: cattyAuthorization.targetIdentity.protocol,
+        ...(cattyAuthorization.notesFingerprint
+          ? { expectedNotesFingerprint: cattyAuthorization.notesFingerprint }
+          : {}),
+      };
+    }
+    if (
+      capability.policy?.write
+      && !["session.close", "vault.host.delete"].includes(capability.id)
+      && typeof scopedParams.sessionId === "string"
+      && (
+        typeof scopedParams.expectedHostId !== "string"
+        || !scopedParams.expectedHostId
+        || typeof scopedParams.expectedHostname !== "string"
+        || !scopedParams.expectedHostname
+        || typeof scopedParams.expectedProtocol !== "string"
+        || !scopedParams.expectedProtocol
+      )
+    ) {
+      return { ok: false, error: "Execution target identity is missing or incomplete; submit a new plan." };
     }
 
     // Only session.close executes against params.sessionId. host.open instead
@@ -157,13 +256,55 @@ function createCapabilityRpcDispatcher(deps) {
         hostname: host?.hostname || "",
       };
     }
+    if (scopedParams.expectedHostId && scopedParams.sessionId) {
+      const meta = typeof getSessionMeta === "function"
+        ? getSessionMeta(scopedParams.sessionId, trustedChatSessionId)
+        : null;
+      if (!meta || meta.connected !== true || (meta.hostId || meta.savedHostId) !== scopedParams.expectedHostId) {
+        return { ok: false, error: "Execution target host identity changed; submit a new plan." };
+      }
+      if (scopedParams.expectedHostname
+        && (!meta.hostname
+          || String(meta.hostname).trim().toLowerCase() !== String(scopedParams.expectedHostname).trim().toLowerCase())) {
+        return { ok: false, error: "Execution target hostname changed or is incomplete; submit a new plan." };
+      }
+      if (scopedParams.expectedProtocol
+        && (!meta.protocol
+          || String(meta.protocol).toLowerCase() !== String(scopedParams.expectedProtocol).toLowerCase())) {
+        return { ok: false, error: "Execution target protocol changed or is incomplete; submit a new plan." };
+      }
+    }
+
+    if (
+      typeof trustedChatSessionId === "string"
+      && ["vault.host.notes.get", "vault.host.notes.set", "portforward.start", "portforward.stop"].includes(capability.id)
+    ) {
+      const requestedHostId = typeof params?.hostId === "string" ? params.hostId.trim() : "";
+      const scopedSessionIds = typeof getScopedSessionIds === "function"
+        ? getScopedSessionIds(trustedChatSessionId)
+        : [];
+      const inScope = requestedHostId && scopedSessionIds.some((sessionId) => {
+        const meta = typeof getSessionMeta === "function"
+          ? getSessionMeta(sessionId, trustedChatSessionId)
+          : null;
+        return meta?.connected === true
+          && (meta.hostId || meta.savedHostId) === requestedHostId;
+      });
+      if (!inScope) {
+        return {
+          ok: false,
+          error: `Host "${requestedHostId || "(missing)"}" is not connected in the current chat scope.`,
+        };
+      }
+    }
+
     const permission = evaluatePermissionWithGrants({
       rpcMethod,
       surface,
       permissionMode: deps.permissionMode,
-      params,
+      params: scopedParams,
       context: {
-        chatSessionCancelled: isChatSessionCancelled(params?.chatSessionId),
+        chatSessionCancelled: isChatSessionCancelled(trustedChatSessionId),
         hostId: approvalTarget?.hostId,
       },
     }, deps.permissionGrantsSnapshot);
@@ -173,7 +314,7 @@ function createCapabilityRpcDispatcher(deps) {
     }
 
     if (permission.requiresApproval && !deps.hasSessionApproval?.(approvalContext.externalSocket)) {
-      const { chatSessionId, ...toolArgs } = params || {};
+      const { chatSessionId, ...toolArgs } = scopedParams || {};
       const toolName = getMcpToolNameForRpcMethod(rpcMethod, surface)
         || capability.surfaces?.[CAPABILITY_SURFACES.PUBLIC]?.mcpTool
         || capability.id;
@@ -196,14 +337,102 @@ function createCapabilityRpcDispatcher(deps) {
     }
 
     const hostOpenGeneration = capability.id === "vault.host.open"
-      ? deps.captureHostOpenScope?.(params?.chatSessionId)
+      ? deps.captureHostOpenScope?.(trustedChatSessionId)
       : null;
-    const result = await handler(params);
-    if (capability.id === "vault.host.open" && result?.ok !== false && result?.sessionId) {
-      await deps.onHostOpened?.(params?.chatSessionId, result.sessionId, hostOpenGeneration, result);
+    const shouldCancelPortForwardStart = capability.id === "portforward.start"
+      && typeof trustedChatSessionId === "string"
+      && typeof scopedParams?.ruleId === "string";
+    const shouldTrackChatOperation = typeof trustedChatSessionId === "string";
+    let ownsPortForwardStartLock = false;
+    if (shouldCancelPortForwardStart) {
+      if (activePortForwardStarts.has(scopedParams.ruleId)) {
+        return { ok: false, error: "A port-forward start for this rule is already in progress." };
+      }
+      activePortForwardStarts.add(scopedParams.ruleId);
+      ownsPortForwardStartLock = true;
+      let existing;
+      try {
+        existing = await service.listTunnels?.();
+      } catch (error) {
+        activePortForwardStarts.delete(scopedParams.ruleId);
+        ownsPortForwardStartLock = false;
+        return { ok: false, error: error?.message || String(error) };
+      }
+      if (!existing || existing.ok === false) {
+        activePortForwardStarts.delete(scopedParams.ruleId);
+        ownsPortForwardStartLock = false;
+        return { ok: false, error: existing?.error || "Unable to verify existing port-forward tunnels before starting." };
+      }
+      const activeTunnels = Array.isArray(existing.tunnels) ? existing.tunnels : [];
+      if (activeTunnels.some(tunnel => tunnel?.ruleId === scopedParams.ruleId)) {
+        activePortForwardStarts.delete(scopedParams.ruleId);
+        ownsPortForwardStartLock = false;
+        return { ok: false, error: "Port-forward rule already has an active tunnel; stop it explicitly before starting it again." };
+      }
     }
-    return result;
+    if (approvalContext.catty === true && capability.policy?.write) {
+      const claimed = deps.validateCattyPlanStep({
+        token: approvalContext.cattyPlanToken,
+        chatSessionId: trustedChatSessionId,
+        toolName: getMcpToolNameForRpcMethod(rpcMethod, surface) || capability.id,
+        args: scopedParams,
+        sessionId: scopedParams.sessionId,
+        webContentsId: approvalContext.webContentsId,
+      });
+      if (!claimed.ok) {
+        if (ownsPortForwardStartLock) activePortForwardStarts.delete(scopedParams.ruleId);
+        return claimed;
+      }
+      cattyAuthorization = claimed;
+    }
+    let operationPromise;
+    const unregisterCancellation = shouldTrackChatOperation
+      ? registerChatCancellation(trustedChatSessionId, async () => {
+          // Do not acknowledge a generic capability cancellation while the
+          // underlying handler is still running. Port-forward starts also need
+          // an explicit stop after a late tunnel creation completes. The
+          // deadline prevents a broken native handler from hanging the turn.
+          const settled = await awaitOperationSettlement(operationPromise);
+          if (shouldCancelPortForwardStart && typeof invokeVaultAgent === "function") {
+            const result = await invokeVaultAgent("portforward.stop", {
+              ruleId: scopedParams.ruleId,
+              hostId: scopedParams.hostId,
+              chatSessionId: trustedChatSessionId,
+            });
+            if (!result || result.ok === false) {
+              throw new Error(result?.error || "Port-forward cancellation was not confirmed.");
+            }
+          }
+          if (!settled) {
+            throw new Error("Capability cancellation timed out before the handler settled.");
+          }
+        })
+      : () => {};
+    try {
+      operationPromise = Promise.resolve(handler(scopedParams));
+      const result = await operationPromise;
+      if (cattyAuthorization?.ok && approvalContext.cattyPlanToken) {
+        deps.settleCattyPlanStep?.(
+          approvalContext.cattyPlanToken,
+          Boolean(result && typeof result === "object" && result.ok !== false && !result.error),
+        );
+      }
+      if (capability.id === "vault.host.open" && result?.ok !== false && result?.sessionId) {
+        await deps.onHostOpened?.(trustedChatSessionId, result.sessionId, hostOpenGeneration, result);
+      }
+      return result;
+    } catch (error) {
+      if (cattyAuthorization?.ok && approvalContext.cattyPlanToken) {
+        deps.settleCattyPlanStep?.(approvalContext.cattyPlanToken, false);
+      }
+      throw error;
+    } finally {
+      unregisterCancellation();
+      if (ownsPortForwardStartLock) activePortForwardStarts.delete(scopedParams.ruleId);
+    }
   };
+  dispatchCapabilityRpc.cancelChatSessionOperations = cancelChatSessionOperations;
+  return dispatchCapabilityRpc;
 }
 
 module.exports = {

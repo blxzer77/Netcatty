@@ -23,6 +23,9 @@ function registerAgentProcessHandlers(ctx) {
         return { ok: false, error: "External MCP is unavailable" };
       }
     }
+    if (typeof chatSessionId === "string" && chatSessionId && event.sender?.id != null) {
+      mcpServerBridge.bindCattyWebContentsChat?.(event.sender.id, chatSessionId);
+    }
     mcpServerBridge.updateSessionMetadata(list, chatSessionId);
     return { ok: true, count: list.length };
   });
@@ -58,6 +61,9 @@ function registerAgentProcessHandlers(ctx) {
       } catch {
         return { ok: false, error: "External MCP is unavailable" };
       }
+    }
+    if (event.sender?.id != null) {
+      mcpServerBridge.bindCattyWebContentsChat?.(event.sender.id, chatSessionId);
     }
     return mcpServerBridge.mergeSessionMetadata(list, chatSessionId);
   });

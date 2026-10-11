@@ -17,6 +17,31 @@ function isNetworkDeviceLike(meta) {
   return (meta?.deviceType === "network" && isSshOrSerial) || protocol === "serial";
 }
 
+function targetIdentityError(actual, expected) {
+  if (!expected || typeof expected !== "object") {
+    return "Execution target identity is missing; submit a new plan.";
+  }
+  if (["hostId", "hostname", "protocol"].some(key => typeof expected[key] !== "string" || !expected[key].trim())) {
+    return "Execution target identity is incomplete; submit a new plan.";
+  }
+  if (actual?.hostId !== expected.hostId) {
+    return "Execution target host identity changed; submit a new plan.";
+  }
+  if (typeof expected.hostname === "string" && expected.hostname) {
+    if (typeof actual?.hostname !== "string" || !actual.hostname.trim()
+      || actual.hostname.trim().toLowerCase() !== expected.hostname.trim().toLowerCase()) {
+      return "Execution target hostname changed or is incomplete; submit a new plan.";
+    }
+  }
+  if (typeof expected.protocol === "string" && expected.protocol) {
+    if (typeof actual?.protocol !== "string" || !actual.protocol
+      || actual.protocol.toLowerCase() !== expected.protocol.toLowerCase()) {
+      return "Execution target protocol changed or is incomplete; submit a new plan.";
+    }
+  }
+  return null;
+}
+
 async function proxyCattyExecToWorker({
   event,
   terminalWorkerManager,
@@ -24,6 +49,7 @@ async function proxyCattyExecToWorker({
   sessionId,
   command,
   chatSessionId,
+  expectedTarget,
 }) {
   if (!terminalWorkerManager?.request) {
     return { ok: false, error: "Session not found" };
@@ -33,6 +59,8 @@ async function proxyCattyExecToWorker({
   if (busyErr) return busyErr;
 
   const meta = getWorkerExecutionMeta(mcpServerBridge, sessionId, chatSessionId);
+  const targetError = targetIdentityError(meta, expectedTarget);
+  if (targetError) return { ok: false, error: targetError };
   if (!isNetworkDeviceLike(meta)) {
     // No live session here: settings additions plus common defaults only; the
     // terminal worker re-runs the shell-selected defaults on the live session.
@@ -60,6 +88,7 @@ async function proxyCattyExecToWorker({
       chatSessionId,
       commandTimeoutMs: mcpServerBridge.getCommandTimeoutMs ? mcpServerBridge.getCommandTimeoutMs() : 60000,
       sessionMeta: meta,
+      expectedTarget,
       commandBlocklist: mcpServerBridge.getCommandBlocklist?.(),
     }, {
       webContentsId: event?.sender?.id,
@@ -73,15 +102,64 @@ async function proxyCattyExecToWorker({
 
 function registerCattyExecHandlers(ctx) {
   with (ctx) {
-  ipcMain.handle("netcatty:ai:exec", async (event, { sessionId, command, chatSessionId }) => {
+  ipcMain.handle("netcatty:ai:prepare-plan", async (event, payload = {}) => {
+    if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, payload.chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
+    return mcpServerBridge.prepareCattyPlan({ ...payload, webContentsId: event.sender.id });
+  });
+  ipcMain.handle("netcatty:ai:approve-plan", async (event, payload = {}) => {
+    if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, payload.chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
+    return mcpServerBridge.approveCattyPlan({ ...payload, webContentsId: event.sender.id });
+  });
+  ipcMain.handle("netcatty:ai:authorize-plan", async (event, payload = {}) => {
+    if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    return mcpServerBridge.authorizeCattyPlan({ ...payload, webContentsId: event.sender.id });
+  });
+
+  ipcMain.handle("netcatty:ai:exec", async (event, payload = {}) => {
+    const { sessionId, command, chatSessionId, expectedTarget, approvalToken } = payload;
+    let executionTarget = expectedTarget;
     // Validate IPC sender (Issue #17)
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
+    }
+    if (chatSessionId && !mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
     }
     // Block execution in observer mode (Issue #11)
     if (mcpServerBridge.getPermissionMode() === "observer") {
       return { ok: false, error: "Execution blocked: permission mode is 'observer'" };
     }
+    let authorization;
+    if (chatSessionId) {
+      authorization = mcpServerBridge.validateCattyPlanStep({
+        token: approvalToken,
+        chatSessionId,
+        toolName: "terminal_execute",
+        args: { sessionId, command },
+        sessionId,
+        webContentsId: event.sender.id,
+      });
+      if (!authorization.ok) return authorization;
+      executionTarget = authorization.targetIdentity;
+    }
+    if (chatSessionId && (!executionTarget || typeof executionTarget !== "object")) {
+      return { ok: false, error: "Execution target identity is missing; submit a new plan." };
+    }
+    const settleAuthorization = (result) => {
+      if (authorization?.ok) {
+        const success = Boolean(result && typeof result === "object" && result.ok !== false && !result.error);
+        mcpServerBridge.settleCattyPlanStep(approvalToken, success, authorization.batchChild
+          ? { batchChild: true, sessionId }
+          : undefined);
+      }
+      return result;
+    };
     const session = sessions?.get(sessionId);
     if (!session) {
       return proxyCattyExecToWorker({
@@ -91,7 +169,19 @@ function registerCattyExecHandlers(ctx) {
         sessionId,
         command,
         chatSessionId,
-      });
+        expectedTarget: executionTarget,
+      }).then(settleAuthorization);
+    }
+    const meta = mcpServerBridge.getSessionMeta(sessionId, chatSessionId) || {};
+    const targetError = targetIdentityError({
+      ...meta,
+      ...session,
+      protocol: session.protocol || session.type || meta.protocol,
+      hostname: session.hostname || meta.hostname,
+    }, executionTarget);
+    if (targetError) {
+      if (authorization?.ok) mcpServerBridge.settleCattyPlanStep(approvalToken, false);
+      return { ok: false, error: targetError };
     }
 
     // Honor the per-session execution lock so this IPC path does not race with
@@ -111,7 +201,6 @@ function registerCattyExecHandlers(ctx) {
     // Mosh sessions use a shell-backed PTY, so network device mode only applies to SSH/serial.
     // Prefer session.protocol (runtime truth) over meta.protocol (renderer hint)
     // because Mosh tabs report as protocol:"ssh" in metadata but "mosh" in session.
-    const meta = mcpServerBridge.getSessionMeta(sessionId, chatSessionId) || {};
     const sessionProtocol = session.protocol || session.type || meta.protocol || "";
     const isSshOrSerial = sessionProtocol === "ssh" || sessionProtocol === "serial";
     const isNetworkDevice = (meta.deviceType === "network" && isSshOrSerial) || sessionProtocol === "serial";
@@ -121,7 +210,7 @@ function registerCattyExecHandlers(ctx) {
     const withLockRelease = (factory) => {
       try {
         const result = factory();
-        return Promise.resolve(result).finally(releaseLock);
+        return Promise.resolve(result).then(settleAuthorization).finally(releaseLock);
       } catch (err) {
         releaseLock();
         return { ok: false, error: err?.message || String(err) };
@@ -270,6 +359,9 @@ function registerCattyExecHandlers(ctx) {
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
     }
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     mcpServerBridge.cancelPtyExecsForSession(chatSessionId);
     void mcpServerBridge.cancelSftpOpsForSession?.(chatSessionId);
     if (typeof mcpServerBridge.cancelWorkerBackgroundJobsForSession === "function") {
@@ -293,6 +385,9 @@ function registerCattyExecHandlers(ctx) {
     if (!chatSessionId || typeof chatSessionId !== "string") {
       return { ok: false, error: "chatSessionId is required" };
     }
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     try {
       return await mcpServerBridge.applyChatSessionCancelled(chatSessionId, cancelled !== false);
     } catch (err) {
@@ -300,16 +395,25 @@ function registerCattyExecHandlers(ctx) {
     }
   });
 
-  ipcMain.handle("netcatty:ai:capability", async (event, { rpcMethod, params, chatSessionId }) => {
+  ipcMain.handle("netcatty:ai:capability", async (event, { rpcMethod, params, chatSessionId, approvalToken }) => {
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
     }
     if (!rpcMethod || typeof rpcMethod !== "string") {
       return { ok: false, error: "rpcMethod is required" };
     }
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     return mcpServerBridge.dispatchBuiltinRpc(rpcMethod, {
       ...(params || {}),
       chatSessionId,
+      ...(approvalToken ? { approvalToken } : {}),
+    }, {
+      chatSessionId,
+      webContentsId: event.sender.id,
+      catty: true,
+      ...(approvalToken ? { cattyPlanToken: approvalToken } : {}),
     });
   });
   }

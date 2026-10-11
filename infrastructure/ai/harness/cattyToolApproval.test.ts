@@ -1,6 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCattyToolApproval } from './cattyToolApproval';
+import { proposePlan, resetPlanGateForTests, resolvePlan } from '../shared/planGate';
+import type { PlanStep } from './types';
 
 describe('buildCattyToolApproval', () => {
   it('auto-approves read-only tools', async () => {
@@ -42,7 +44,7 @@ describe('buildCattyToolApproval', () => {
     });
   });
 
-  it('auto-approves write tools in auto mode', async () => {
+  it('requires a plan before write tools in auto mode', async () => {
     const approval = buildCattyToolApproval({ permissionMode: 'auto', chatSessionId: 'chat-1' });
     const result = await approval({
       toolCall: {
@@ -51,7 +53,10 @@ describe('buildCattyToolApproval', () => {
         input: { path: '/tmp/x', content: 'hi' },
       },
     } as Parameters<typeof approval>[0]);
-    assert.equal(result, undefined);
+    assert.deepEqual(result, {
+      type: 'denied',
+      reason: 'Submit a plan before executing a Catty write in Auto mode.',
+    });
   });
 
   it('awaits user approval in confirm mode for write tools', async () => {
@@ -93,6 +98,79 @@ describe('buildCattyToolApproval', () => {
     assert.deepEqual(result, {
       type: 'denied',
       reason: 'User denied tool execution.',
+    });
+  });
+});
+
+describe('buildCattyToolApproval with an approved plan', () => {
+  beforeEach(() => {
+    resetPlanGateForTests();
+  });
+
+  const approvePlan = async (planId: string, steps: PlanStep[]) => {
+    const chatSessionId = 'chat-plan';
+    const pending = proposePlan({ goal: 'test plan', steps, chatSessionId, planId });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    resolvePlan(planId, { outcome: 'approved' });
+    await pending;
+  };
+
+  it('skips the per-call prompt for a tool call the approved plan named', async () => {
+    await approvePlan('plan-call-6', [
+      {
+        id: 's1',
+        title: 'write file',
+        toolName: 'sftp_write_file',
+        sessionId: 'session-a',
+        args: { sessionId: 'session-a', path: '/tmp/x', content: 'hi' },
+      },
+    ]);
+    let asked = false;
+    const approval = buildCattyToolApproval({
+      permissionMode: 'confirm',
+      chatSessionId: 'chat-plan',
+      requestApproval: async () => { asked = true; return false; },
+    });
+    const result = await approval({
+      toolCall: {
+        toolCallId: 'call-6',
+        toolName: 'sftp_write_file',
+        input: { sessionId: 'session-a', path: '/tmp/x', content: 'hi' },
+      },
+    } as Parameters<typeof approval>[0]);
+
+    assert.equal(asked, false);
+    assert.equal(result, undefined);
+  });
+
+  it('denies a write outside the approved plan instead of falling back to approval', async () => {
+    await approvePlan('plan-call-7', [
+      {
+        id: 's1',
+        title: 'write file',
+        toolName: 'sftp_write_file',
+        sessionId: 'session-a',
+        args: { sessionId: 'session-a', path: '/tmp/x', content: 'hi' },
+      },
+    ]);
+    let asked = false;
+    const approval = buildCattyToolApproval({
+      permissionMode: 'confirm',
+      chatSessionId: 'chat-plan',
+      requestApproval: async () => { asked = true; return true; },
+    });
+    const result = await approval({
+      toolCall: {
+        toolCallId: 'call-7',
+        toolName: 'sftp_write_file',
+        input: { sessionId: 'session-b', path: '/tmp/y', content: 'ho' },
+      },
+    } as Parameters<typeof approval>[0]);
+
+    assert.equal(asked, false);
+    assert.deepEqual(result, {
+      type: 'denied',
+      reason: 'This write is outside the approved plan. Submit a new plan for it.',
     });
   });
 });

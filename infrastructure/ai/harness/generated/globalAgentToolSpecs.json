@@ -890,7 +890,7 @@
       "requiresChatSession": false,
       "bypassesObserverBlock": false,
       "bypassesApproval": true,
-      "bypassesChatCancel": true
+      "bypassesChatCancel": false
     },
     "agentKind": "global"
   },
@@ -2267,6 +2267,11 @@
         "type": "string",
         "optional": false,
         "description": "Port forwarding rule ID."
+      },
+      "hostId": {
+        "type": "string",
+        "optional": false,
+        "description": "Vault host ID that owns the rule; must be in the current scope."
       }
     },
     "policy": {
@@ -2291,6 +2296,11 @@
         "type": "string",
         "optional": false,
         "description": "Port forwarding rule ID."
+      },
+      "hostId": {
+        "type": "string",
+        "optional": false,
+        "description": "Vault host ID that owns the rule; must be in the current scope."
       }
     },
     "policy": {

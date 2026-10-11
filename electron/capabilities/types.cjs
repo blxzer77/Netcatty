@@ -32,6 +32,8 @@
  * @property {CapabilityPolicy} policy
  * @property {Partial<Record<CapabilitySurface, CapabilitySurfaceBinding>>} surfaces
  * @property {AgentKind[]} [agentKinds] Explicit agent placement; inferred when omitted (see resolveAgentKinds).
+ * @property {string[]} [agentToolsets] Toolsets a capability belongs to. The sidebar agent only
+ *   advertises capabilities in the "server-ops" toolset; MCP, CLI, and the global agent ignore this.
  *
  * @typedef {Object} RpcPermissionContext
  * @property {boolean} [chatSessionCancelled]

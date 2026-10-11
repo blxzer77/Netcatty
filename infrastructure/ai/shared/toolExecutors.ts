@@ -19,7 +19,7 @@ import { executeWebSearchProvider } from './webSearchProviders';
 /** Discriminated union returned by every shared executor. */
 export type ToolExecResult<T = unknown> =
   | { ok: true; data: T }
-  | { ok: false; error: string; data?: T };
+  | { ok: false; error: string; data?: T; retainQueueSlot?: boolean };
 
 // ---------------------------------------------------------------------------
 // Dependencies bundle
@@ -66,9 +66,16 @@ function isObserver(mode: AIPermissionMode): boolean {
 export async function executeTerminalExecute(
   deps: ToolDeps,
   args: { sessionId: string; command: string },
+  options: {
+    abortSignal?: AbortSignal;
+    expectedTarget?: { hostId?: string; hostname?: string; protocol?: string };
+    approvalToken?: string;
+    onUnderlyingSettled?: () => void;
+  } = {},
 ): Promise<ToolExecResult<{ stdout: string; stderr: string; exitCode: number | null }>> {
   const { bridge, context, commandBlocklist, permissionMode } = deps;
   const { sessionId, command } = args;
+  const { abortSignal } = options;
 
   if (!sessionId || !command) {
     return { ok: false, error: 'Missing sessionId or command' };
@@ -98,7 +105,70 @@ export async function executeTerminalExecute(
     }
   }
 
-  const result = await bridge.aiExec(sessionId, command, deps.chatSessionId);
+  if (abortSignal?.aborted) {
+    return { ok: false, error: 'Tool call cancelled before execution.' };
+  }
+
+  let cancellationAcknowledgement: Promise<unknown> | undefined;
+  let resolveCancellationOutcome: ((result: { ok: false; error: string }) => void) | undefined;
+  const cancellationOutcome = new Promise<{ ok: false; error: string }>(resolve => {
+    resolveCancellationOutcome = resolve;
+  });
+  let cancellationError: string | undefined;
+  const cancelOnAbort = () => {
+    cancellationAcknowledgement = deps.chatSessionId && deps.bridge.aiCattyCancelExec
+      ? deps.bridge.aiCattyCancelExec(deps.chatSessionId)
+      : Promise.reject(new Error('Main-process terminal cancellation is unavailable.'));
+    void cancellationAcknowledgement.then(
+      (acknowledgement) => resolveCancellationOutcome?.({
+        ok: false,
+        error: acknowledgement && typeof acknowledgement === 'object' && 'error' in acknowledgement
+          ? String((acknowledgement as { error?: unknown }).error || 'Terminal cancellation was acknowledged.')
+          : 'Terminal execution cancelled with the owning turn.',
+      }),
+      (error) => resolveCancellationOutcome?.({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    // Keep rejection handlers attached while the underlying exec request is
+    // still settling; the same promise is awaited below for the real result.
+    void cancellationAcknowledgement.catch(() => {});
+  };
+  abortSignal?.addEventListener('abort', cancelOnAbort, { once: true });
+  let result: Awaited<ReturnType<NetcattyBridge['aiExec']>>;
+  try {
+    const executionRequest = bridge.aiExec(
+      sessionId,
+      command,
+      deps.chatSessionId,
+      options.expectedTarget,
+      options.approvalToken,
+    );
+    void executionRequest.then(
+      () => options.onUnderlyingSettled?.(),
+      () => options.onUnderlyingSettled?.(),
+    );
+    result = await Promise.race([executionRequest, cancellationOutcome]);
+  } finally {
+    abortSignal?.removeEventListener('abort', cancelOnAbort);
+    if (cancellationAcknowledgement) {
+      try {
+        const acknowledgement = await cancellationAcknowledgement;
+        if (
+          acknowledgement
+          && typeof acknowledgement === 'object'
+          && 'ok' in acknowledgement
+          && (acknowledgement as { ok?: unknown }).ok === false
+        ) {
+          cancellationError = String((acknowledgement as { error?: unknown }).error || 'Main-process terminal cancellation was not acknowledged.');
+        }
+      } catch (error) {
+        cancellationError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+  if (cancellationError) return { ok: false, error: cancellationError, retainQueueSlot: true };
   // Real execution failures (timeout, disconnect, no stream) have an `error` field
   if (!result.ok && result.error) {
     return {

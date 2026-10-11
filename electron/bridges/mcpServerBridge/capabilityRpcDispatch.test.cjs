@@ -29,6 +29,8 @@ function createTestDispatcher(overrides = {}) {
     isChatSessionCancelled: () => false,
     requestApprovalFromRenderer,
     USER_DENIED_MESSAGE: "User denied the operation.",
+    getScopedSessionIds: () => ["scope-session"],
+    getSessionMeta: () => ({ connected: true, hostId: "host-1" }),
     ...overrides,
   });
 }
@@ -48,7 +50,7 @@ test("dispatchCapabilityRpc routes vault host notes get to vault service", async
     },
   });
 
-  const result = await dispatch("vault/host/notes/get", { hostId: "host-1" });
+  const result = await dispatch("vault/host/notes/get", { hostId: "host-1" }, { chatSessionId: "chat-1" });
   assert.equal(invokedOp, "host.notes.get");
   assert.equal(result.ok, true);
   assert.equal(result.notes, "notes");
@@ -83,6 +85,35 @@ test("dispatchCapabilityRpc routes public vault host notes set through approval"
   assert.equal(approvalCalls[0].toolName, "host_notes_set");
   assert.equal(result.ok, true);
   assert.equal(result.notes, "updated");
+});
+
+test("Catty write capability validation receives the owning renderer binding", async () => {
+  const validations = [];
+  const dispatch = createTestDispatcher({
+    validateCattyPlanStep: (input) => {
+      validations.push(input);
+      return {
+        ok: true,
+        targetIdentity: { hostId: "host-1", hostname: "host.example", protocol: "ssh" },
+      };
+    },
+    settleCattyPlanStep() {},
+    invokeVaultAgent: async (_op, params) => ({ ok: true, hostId: params.hostId, notes: params.notes }),
+  });
+
+  const result = await dispatch("vault/host/notes/set", {
+    hostId: "host-1",
+    notes: "updated",
+  }, {
+    catty: true,
+    cattyPlanToken: "plan-token",
+    chatSessionId: "chat-1",
+    webContentsId: 77,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(validations.length, 2);
+  assert.deepEqual(validations.map((entry) => entry.webContentsId), [77, 77]);
 });
 
 test("vault host deletion cannot borrow a different session's host grant", async () => {
@@ -392,10 +423,63 @@ test("dispatchCapabilityRpc routes portforward start to portforward service", as
   const result = await dispatch("portforward/start", {
     chatSessionId: "chat-1",
     ruleId: "rule-1",
-  });
+    hostId: "host-1",
+  }, { chatSessionId: "chat-1" });
   assert.equal(invokedOp, "portforward.start");
   assert.equal(result.ok, true);
   assert.equal(result.ruleId, "rule-1");
+});
+
+test("chat-scoped portforward rejects a host outside the live session scope", async () => {
+  let invoked = false;
+  const dispatch = createTestDispatcher({
+    invokeVaultAgent: async () => {
+      invoked = true;
+      return { ok: true };
+    },
+  });
+
+  const result = await dispatch("portforward/start", {
+    chatSessionId: "chat-1",
+    ruleId: "rule-1",
+    hostId: "host-outside-scope",
+  }, { chatSessionId: "chat-1" });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not connected in the current chat scope/);
+  assert.equal(invoked, false);
+});
+
+test("portforward cancellation waits for start and stops the exact rule", async () => {
+  let resolveStart;
+  const invoked = [];
+  const startResult = new Promise((resolve) => { resolveStart = resolve; });
+  const dispatch = createTestDispatcher({
+    invokeVaultAgent: async (op, params) => {
+      invoked.push({ op, params });
+      if (op === "portforward.start") return startResult;
+      return { ok: true, ruleId: params.ruleId };
+    },
+  });
+
+  const pendingStart = dispatch("portforward/start", {
+    chatSessionId: "chat-cancel-pf",
+    ruleId: "rule-1",
+    hostId: "host-1",
+  }, { chatSessionId: "chat-cancel-pf" });
+  await new Promise(resolve => setImmediate(resolve));
+  const pendingCancel = dispatch.cancelChatSessionOperations("chat-cancel-pf");
+  let settled = false;
+  void pendingCancel.then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  resolveStart({ ok: true, ruleId: "rule-1" });
+  await pendingStart;
+  await pendingCancel;
+  assert.deepEqual(invoked, [
+    { op: "portforward.start", params: { ruleId: "rule-1", hostId: "host-1", chatSessionId: "chat-cancel-pf" } },
+    { op: "portforward.stop", params: { ruleId: "rule-1", hostId: "host-1", chatSessionId: "chat-cancel-pf" } },
+  ]);
 });
 
 test("dispatchCapabilityRpc lists port forwards from the configured runtime", async () => {

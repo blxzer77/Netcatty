@@ -8,6 +8,7 @@ const { TOOL_INPUT_FIELDS } = require("../schemas/toolInputs.cjs");
 const {
   listMcpTools,
   listCattyToolSpecs,
+  listAgentToolSpecs,
   CATTY_CAPABILITY_DENYLIST,
   isCattyEligible,
 } = require("./toolSurfaces.cjs");
@@ -26,10 +27,12 @@ test("listCattyToolSpecs includes terminal long-running tools", () => {
   assert.ok(names.includes("terminal_stop"));
 });
 
-test("listCattyToolSpecs includes SFTP write tools and attachments", () => {
+test("listCattyToolSpecs includes SFTP write tools but not attachments", () => {
   const capabilityIds = listCattyToolSpecs().map((spec) => spec.capabilityId);
-  assert.ok(capabilityIds.includes("attachment.list"));
-  assert.ok(capabilityIds.includes("attachment.read"));
+  // Attachments are chat input for a general assistant; the server-ops agent
+  // does not import host lists into the vault.
+  assert.ok(!capabilityIds.includes("attachment.list"));
+  assert.ok(!capabilityIds.includes("attachment.read"));
   assert.ok(capabilityIds.includes("sftp.write"));
   assert.ok(capabilityIds.includes("sftp.mkdir"));
   assert.ok(capabilityIds.includes("sftp.delete"));
@@ -39,20 +42,30 @@ test("listCattyToolSpecs includes SFTP write tools and attachments", () => {
   assert.ok(!capabilityIds.includes("session.cancel"));
 });
 
-test("listCattyToolSpecs includes vault host tools and SFTP transfer", () => {
+test("listCattyToolSpecs keeps SFTP transport and only the machine-record host notes", () => {
   const capabilityIds = listCattyToolSpecs().map((spec) => spec.capabilityId);
-  assert.ok(capabilityIds.includes("vault.host.get"));
-  assert.ok(capabilityIds.includes("vault.host.list"));
-  // Sidebar Catty must not open hosts; that expands scope mid-turn.
-  assert.ok(!capabilityIds.includes("vault.host.open"));
-  assert.ok(capabilityIds.includes("vault.hosts.create"));
-  assert.ok(capabilityIds.includes("vault.host.update"));
-  assert.ok(capabilityIds.includes("vault.host.delete"));
-  assert.ok(capabilityIds.includes("vault.host.import"));
-  assert.ok(capabilityIds.includes("vault.note.create"));
-  assert.ok(capabilityIds.includes("vault.note.list"));
   assert.ok(capabilityIds.includes("sftp.download"));
   assert.ok(capabilityIds.includes("sftp.upload"));
+  // Host notes are the machine record: the agent reads them before working on a
+  // host and updates them afterwards. Everything else in the vault is
+  // inventory the Netcatty UI and CLI manage.
+  assert.ok(capabilityIds.includes("vault.host.notes.get"));
+  assert.ok(capabilityIds.includes("vault.host.notes.set"));
+  for (const inventoryId of [
+    "vault.host.get",
+    "vault.host.list",
+    "vault.hosts.create",
+    "vault.host.update",
+    "vault.host.delete",
+    "vault.host.import",
+    "vault.note.create",
+    "vault.note.list",
+    "vault.group.list",
+    "vault.snippets.list",
+    "vault.scripts.list",
+  ]) {
+    assert.ok(!capabilityIds.includes(inventoryId), `${inventoryId} must leave the sidebar agent`);
+  }
 });
 
 test("host_open stays on MCP and global agent, not sidebar Catty", () => {
@@ -106,15 +119,17 @@ test("core MCP descriptions strongly route live terminal work through Netcatty",
   assert.match(vaultHosts?.description || "", /host_open/i);
 });
 
-test("session_close is exposed to agents and external MCP clients", () => {
+test("session_close stays on MCP and the global agent, not the ops agent", () => {
   const mcpTool = listMcpTools().find((tool) => tool.mcpTool === "session_close");
   assert.ok(mcpTool);
   assert.equal(mcpTool.capabilityId, "session.close");
   assert.equal(mcpTool.publicRpcMethod, "public/session/close");
 
-  const cattyTool = listCattyToolSpecs().find((tool) => tool.toolName === "session_close");
-  assert.ok(cattyTool);
-  assert.equal(cattyTool.rpcMethod, "session/close");
+  // Closing a session the user opened is a Netcatty UI action now.
+  assert.ok(!listCattyToolSpecs().some((tool) => tool.toolName === "session_close"));
+  const globalClose = listAgentToolSpecs("global").find((spec) => spec.toolName === "session_close");
+  assert.ok(globalClose);
+  assert.equal(globalClose.rpcMethod, "session/close");
 });
 
 test("host_open tells agents to close sessions after use", () => {
@@ -123,7 +138,9 @@ test("host_open tells agents to close sessions after use", () => {
 });
 
 test("vault host import tool description routes unknown attached host text to host creation", () => {
-  const importSpec = listCattyToolSpecs().find((spec) => spec.capabilityId === "vault.host.import");
+  // Host import is inventory management: the sidebar agent no longer carries it,
+  // so the routing guidance is asserted against the MCP-facing description.
+  const importSpec = listMcpTools().find((tool) => tool.capabilityId === "vault.host.import");
   assert.ok(importSpec);
   assert.match(importSpec.description, /known export formats/i);
   assert.match(importSpec.description, /FinalShell/);
@@ -132,8 +149,8 @@ test("vault host import tool description routes unknown attached host text to ho
   assert.match(importSpec.description, /vault_hosts_create/i);
 });
 
-test("listCattyToolSpecs binds vault note tools to global RPC methods", () => {
-  const specs = listCattyToolSpecs();
+test("listAgentToolSpecs binds vault note tools to global RPC methods", () => {
+  const specs = listAgentToolSpecs("global");
   const noteCreate = specs.find((spec) => spec.capabilityId === "vault.note.create");
   assert.equal(noteCreate?.rpcMethod, "vault/notes/create");
   const noteList = specs.find((spec) => spec.capabilityId === "vault.note.list");
@@ -149,8 +166,7 @@ test("listCattyToolSpecs binds vault and portforward tools to global RPC methods
 });
 
 test("generic snippet agent tools expose dynamic group targets", () => {
-  const { AGENT_KINDS, listAgentToolSpecs } = require("./toolSurfaces.cjs");
-  for (const kind of [AGENT_KINDS.SIDEBAR, AGENT_KINDS.GLOBAL]) {
+  for (const kind of ["global"]) {
     const specs = listAgentToolSpecs(kind);
     for (const capabilityId of ["vault.snippets.create", "vault.snippets.update"]) {
       const spec = specs.find((entry) => entry.capabilityId === capabilityId);
@@ -177,9 +193,9 @@ test("listAgentToolSpecs splits sidebar harness tools from shared RPC tools", ()
 
 test("listCattyToolSpecs includes renderer harness tools and the shared terminal read entry", () => {
   const specs = listCattyToolSpecs();
-  assert.ok(specs.length >= 40);
+  assert.ok(specs.length >= 20);
   const harness = specs.filter((spec) => spec.capabilityId.startsWith("harness."));
-  assert.equal(harness.length, 6);
+  assert.equal(harness.length, 9);
   for (const spec of harness) {
     const screenRead = spec.capabilityId === "harness.terminal.read_context";
     assert.equal(spec.localExecution, !screenRead);
@@ -189,6 +205,82 @@ test("listCattyToolSpecs includes renderer harness tools and the shared terminal
   assert.ok(harnessIds.includes("harness.tool_output.read"));
   assert.ok(harnessIds.includes("harness.workspace.get_info"));
   assert.ok(harnessIds.includes("harness.terminal.read_context"));
+  // The plan gate is a sidebar-only entry: no MCP or CLI surface, because
+  // there is no chat session elsewhere to approve against.
+  assert.ok(harnessIds.includes("harness.plan.submit"));
+  const mcpIds = listMcpTools().map((tool) => tool.capabilityId);
+  assert.ok(!mcpIds.includes("harness.plan.submit"));
+  const planEntry = ALL_CAPABILITIES.find((cap) => cap.id === "harness.plan.submit");
+  assert.ok(planEntry, "harness.plan.submit must exist in the catalog");
+  assert.deepEqual(Object.keys(planEntry.surfaces), ["catty"]);
+  assert.ok(!CATTY_CAPABILITY_DENYLIST.has("harness.plan.submit"));
+});
+
+test("the sidebar agent advertises exactly the server-ops toolset", () => {
+  const sidebarNames = listCattyToolSpecs().map((spec) => spec.toolName).sort();
+  assert.deepEqual(sidebarNames, [
+    "compare_machines",
+    "get_environment",
+    "host_notes_get",
+    "host_notes_set",
+    "portforward_start",
+    "portforward_stop",
+    "portforward_tunnels_list",
+    "sftp_chmod",
+    "sftp_delete",
+    "sftp_download",
+    "sftp_home",
+    "sftp_list",
+    "sftp_mkdir",
+    "sftp_read_file",
+    "sftp_rename",
+    "sftp_stat",
+    "sftp_upload",
+    "sftp_write_file",
+    "submit_plan",
+    "terminal_batch",
+    "terminal_execute",
+    "terminal_poll",
+    "terminal_read_context",
+    "terminal_start",
+    "terminal_stop",
+    "tool_output_read",
+    "url_fetch",
+    "web_search",
+    "workspace_get_info",
+    "workspace_get_session_info",
+  ]);
+  // Netcatty inventory and knowledge management stays out of the ops agent.
+  for (const name of sidebarNames) {
+    assert.ok(!name.startsWith("vault_") || name.startsWith("vault_host_notes"), name);
+    assert.ok(!name.startsWith("snippets_"), name);
+    assert.ok(!name.startsWith("scripts_"), name);
+    assert.ok(!name.startsWith("portforward_rules_"), name);
+    assert.ok(!name.startsWith("list_attachments"), name);
+  }
+});
+
+test("leaving the sidebar toolset does not shrink the global agent surface", () => {
+  // Regression: resolving agent kinds by sidebar eligibility dropped every
+  // non-server-ops capability from the global agent too (68 -> 22 tools).
+  const globalNames = listAgentToolSpecs("global").map((spec) => spec.toolName).sort();
+  assert.ok(globalNames.length >= 60, `expected the global agent to keep its surface, got ${globalNames.length}`);
+  for (const name of [
+    "host_get",
+    "host_open",
+    "vault_hosts_list",
+    "vault_hosts_import",
+    "vault_notes_list",
+    "snippets_list",
+    "scripts_list",
+    "portforward_rules_list",
+    "list_attachments",
+    "session_close",
+  ]) {
+    assert.ok(globalNames.includes(name), `${name} must stay reachable for the global agent`);
+  }
+  // The sidebar-only plan gate never reaches the global agent.
+  assert.ok(!globalNames.includes("submit_plan"));
 });
 
 test("only terminal reading is exposed from harness on MCP", () => {
@@ -217,12 +309,14 @@ test("catty and mcp terminal tools share capability ids", () => {
   assert.equal(mcp?.capabilityId, "terminal.execute");
 });
 
-test("implemented catalog tools with inputs are catty-eligible unless denylisted or agentKinds-restricted", () => {
+test("implemented catalog tools with inputs are catty-eligible only in the server-ops toolset", () => {
   const implemented = ALL_CAPABILITIES.filter((cap) => cap.status === CAPABILITY_STATUS.IMPLEMENTED);
   for (const capability of implemented) {
     const hasInputs = Object.prototype.hasOwnProperty.call(TOOL_INPUT_FIELDS, capability.id);
     if (!hasInputs) continue;
-    if (CATTY_CAPABILITY_DENYLIST.has(capability.id)) {
+    const inServerOps = Array.isArray(capability.agentToolsets)
+      && capability.agentToolsets.includes("server-ops");
+    if (CATTY_CAPABILITY_DENYLIST.has(capability.id) || !inServerOps) {
       assert.equal(isCattyEligible(capability), false);
       continue;
     }
@@ -235,7 +329,8 @@ test("implemented catalog tools with inputs are catty-eligible unless denylisted
       capability.surfaces?.builtin?.rpcMethod
       || capability.surfaces?.public?.mcpTool,
     );
-    if (hasRpc) {
+    const isLocalHarness = Boolean(capability.surfaces?.catty?.toolName) && !hasRpc;
+    if (hasRpc || isLocalHarness) {
       assert.equal(isCattyEligible(capability), true);
     }
   }

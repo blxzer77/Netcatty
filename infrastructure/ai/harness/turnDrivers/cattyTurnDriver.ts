@@ -7,7 +7,7 @@ import {
   findSafeChatMessageCompactionSplitIndex,
   resolveContextWindow,
 } from '../../contextCompaction';
-import { buildSystemPrompt } from '../../cattyAgent/systemPrompt';
+import { buildSystemPrompt, type SystemPromptContext } from '../../cattyAgent/systemPrompt';
 import {
   isWebSearchReady,
   normalizeCommandTimeoutSeconds,
@@ -31,6 +31,9 @@ import {
 } from '../cattyRuntime';
 import { computeTotalInputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../contextBudget';
 import { clearChatSessionCancelled } from '../agentStop';
+import { clearChatSessionPlans } from '../../shared/planGate';
+import { collectMachineRecordSummaries } from '../machineRecord';
+import { parseRunbook } from '../runbook';
 import { isRequestTooLargeError } from '../../errorClassifier';
 import { getNetcattyBridge, generateId, resolveUserSkillsContext } from '../../aiChatStreamingSupport';
 import {
@@ -152,6 +155,7 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     trimmed,
     context.selectedUserSkillSlugs,
   );
+  const selectedRunbook = parseRunbook(userSkillsContext);
   const modelUserText = fitLargeUserInputForModel(trimmed, sessionId, ctx.toolOutputStore);
   const getExecutorContext = context.getExecutorContext ?? (() => ({
     sessions: context.terminalSessions,
@@ -167,13 +171,70 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     sessionId,
     ctx.toolOutputStore,
     ctx.toolResultDedup,
+    selectedRunbook ?? undefined,
   );
   const { tools } = toolsBundle;
+
+  // Machine records: one bounded line per host, so the agent starts a new
+  // session already knowing what each machine is and what it did last. Only the
+  // agent's own notes block is summarized — the user's prose never enters the
+  // prompt. A host whose notes cannot be read is simply described without one.
+  const machineRecords = await collectMachineRecordSummaries({
+    hosts: context.terminalSessions.map(session => ({
+      sessionId: session.sessionId,
+      hostId: session.hostId,
+    })),
+    signal,
+    readNotes: async (hostId, abortSignal) => {
+      if (abortSignal?.aborted) return null;
+      const request = netcattyBridge.aiCapability?.('vault/host/notes/get', { hostId }, sessionId);
+      if (!request) return null;
+      let onAbort: (() => void) | undefined;
+      const cancelled = abortSignal
+        ? new Promise<unknown>(resolve => {
+            onAbort = () => {
+              const acknowledgement = sessionId && netcattyBridge.aiSetChatSessionCancelled
+                ? netcattyBridge.aiSetChatSessionCancelled(sessionId, true)
+                : Promise.resolve({ ok: false });
+              void acknowledgement.then(() => resolve(null)).catch(() => resolve(null));
+            };
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+          })
+        : null;
+      try {
+        const result = await (cancelled ? Promise.race([request, cancelled]) : request);
+        if (!result || typeof result !== 'object' || 'error' in result) return null;
+        const notes = (result as { notes?: unknown }).notes;
+        return typeof notes === 'string' ? notes : null;
+      } finally {
+        if (onAbort) abortSignal?.removeEventListener('abort', onAbort);
+      }
+    },
+  });
+
+  const systemPromptHosts: SystemPromptContext['hosts'] = context.terminalSessions.map((session) => {
+    const record = session.hostId ? machineRecords.get(session.hostId) : undefined;
+    return {
+      sessionId: session.sessionId,
+      hostId: session.hostId,
+      hostname: session.hostname,
+      label: session.label,
+      os: session.os,
+      username: session.username,
+      protocol: session.protocol,
+      shellType: session.shellType,
+      deviceType: session.deviceType,
+      connected: session.connected,
+      ...(session.hostChain ? { hostChain: session.hostChain } : {}),
+      ...(session.activePortForwards ? { activePortForwards: session.activePortForwards } : {}),
+      ...(record ? { machineRecord: record } : {}),
+    };
+  });
 
   const systemPrompt = buildSystemPrompt({
     scopeType: context.scopeType,
     scopeLabel: context.scopeLabel,
-    hosts: context.terminalSessions,
+    hosts: systemPromptHosts,
     permissionMode: context.globalPermissionMode,
     webSearchEnabled: isWebSearchReady(context.webSearchConfig),
     userSkillsContext,
@@ -558,6 +619,9 @@ async function runCattyTurn(input: CattyTurnInput, ctx: TurnDriverContext): Prom
     ui.updateLastMessage(sessionId, msg => msg.statusText ? { ...msg, statusText: '' } : msg);
     ui.setStreamingForScope(sessionId, false);
     context.autoTitleSession(sessionId, context.titleText ?? trimmed);
+    // A turn owns both its grants and any pending approval card. Stop/abort or
+    // normal completion must not leave a stale plan that can be approved later.
+    clearChatSessionPlans(sessionId);
   }
 }
 

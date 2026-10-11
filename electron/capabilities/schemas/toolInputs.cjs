@@ -374,9 +374,11 @@ const TOOL_INPUT_FIELDS = Object.freeze({
   "portforward.tunnels.list": {},
   "portforward.start": {
     ruleId: { type: "string", description: "Port forwarding rule ID." },
+    hostId: { type: "string", description: "Vault host ID that owns the rule; must be in the current scope." },
   },
   "portforward.stop": {
     ruleId: { type: "string", description: "Port forwarding rule ID." },
+    hostId: { type: "string", description: "Vault host ID that owns the rule; must be in the current scope." },
   },
   "harness.tool_output.read": {
     handleId: { type: "string", description: "Tool output handle id from a prior truncated result." },
@@ -394,6 +396,67 @@ const TOOL_INPUT_FIELDS = Object.freeze({
     range: { type: "string", optional: true, description: "Which terminal slice to read: viewport, tail, head, or lines. Defaults to viewport." },
     startLine: { type: "number", optional: true, description: "Zero-based terminal buffer line to start from when range is lines." },
     maxLines: { type: "number", optional: true, description: "Maximum terminal rows to return. Defaults to 80, capped at 300." },
+  },
+  "harness.plan.submit": {
+    goal: {
+      type: "string",
+      description: "One sentence: what the user asked for and what the plan will accomplish.",
+    },
+    steps: {
+      type: "string",
+      description:
+        "JSON array of step objects, one per action, in execution order. Each object: id (short, stable), title (imperative), toolName (the tool the step will call), sessionId or sessionIds (target session(s)), args (exact structured tool arguments; required for non-terminal actions), command (exact terminal command), reason (why this step is needed), verification (how the step proves it worked), risk (read|low|high). Approved write steps are matched against their exact arguments.",
+    },
+    preconditions: {
+      type: "string",
+      optional: true,
+      description:
+        "JSON array of prerequisite checks the plan depends on, in the form [{id, label, ok, detail?}]. Every precondition must be ok=true; a false precondition blocks the plan.",
+    },
+    proxyRisk: {
+      type: "string",
+      optional: true,
+      description:
+        "Set to true when this plan could interrupt the proxy path (proxy service, firewall, routes, DNS, port forwards). The plan is then blocked unless backupAccess passes.",
+    },
+    backupAccess: {
+      type: "string",
+      optional: true,
+      description:
+        "Required when proxyRisk is true. JSON object keyed by check id: backup-connection, alternate-route, config-backup, recovery-plan. Each value is {ok, detail}. The harness verifies backup-connection from live sessions and requires recovery-plan to name the procedure; model-only declarations for alternate-route and config-backup remain unverified and fail closed until host-bound tool-result evidence exists.",
+    },
+  },
+  "harness.terminal.batch": {
+    sessionIds: {
+      type: "string",
+      description:
+        "JSON array of session IDs to run on. Use get_environment to resolve labels or hostnames to session IDs.",
+    },
+    command: {
+      type: "string",
+      description: "The command to run on every listed session. The same command goes to each host.",
+    },
+    mode: {
+      type: "string",
+      optional: true,
+      description: "serial (default) runs one host at a time; parallel runs them all at once.",
+    },
+    stopOnError: {
+      type: "string",
+      optional: true,
+      description: "Set to true to stop after the first failing host. Serial mode only.",
+    },
+  },
+  "harness.machines.compare": {
+    sessionIds: {
+      type: "string",
+      description:
+        "JSON array of session IDs to compare. Use get_environment to resolve labels or hostnames to session IDs.",
+    },
+    command: {
+      type: "string",
+      description: "The read-only command to run on every host, for example 'nginx -v' or 'df -h /'. Its output is compared, not its exit code.",
+    },
   },
   "harness.web.search": {
     query: { type: "string", description: "The search query to look up on the web." },
