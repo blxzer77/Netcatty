@@ -60,6 +60,7 @@ let discoverySelfHealTimer = null;
 const DISCOVERY_SELF_HEAL_INTERVAL_MS = 15000;
 
 const cattyPlanAuthorizations = new Map();
+const cattyPendingPlans = new Map();
 const CATTY_PLAN_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
 
 function canonicalCattyValue(value) {
@@ -73,6 +74,9 @@ function pruneCattyPlanAuthorizations() {
   for (const [token, entry] of cattyPlanAuthorizations) {
     if (entry.createdAt < cutoff) cattyPlanAuthorizations.delete(token);
   }
+  for (const [token, entry] of cattyPendingPlans) {
+    if (entry.createdAt < cutoff) cattyPendingPlans.delete(token);
+  }
 }
 
 function cattyNotesFingerprint(value) {
@@ -84,14 +88,59 @@ function cattyNotesFingerprint(value) {
   return hash.toString(16).padStart(8, "0");
 }
 
-async function authorizeCattyPlan({ chatSessionId, planId, steps, targetIdentities } = {}) {
-  pruneCattyPlanAuthorizations();
+function validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities } = {}) {
   if (typeof chatSessionId !== "string" || !chatSessionId
     || typeof planId !== "string" || !planId
     || !Array.isArray(steps) || steps.length === 0
-    || !Array.isArray(targetIdentities)) {
-    return { ok: false, error: "A complete Catty plan authorization is required." };
+    || !Array.isArray(targetIdentities) || targetIdentities.length === 0) {
+    return "A complete Catty plan proposal is required.";
   }
+  if (steps.some(step => !step || typeof step.toolName !== "string" || !step.args || typeof step.args !== "object")) {
+    return "Catty plan steps must name a tool and structured arguments.";
+  }
+  if (steps.some(step => typeof step.command === "string" && /(?:\$\(|`|\$\{|\beval\b|\b(?:sh|bash|zsh|python|perl|ruby|node)\b|[\r\n;&|<>])/.test(step.command))) {
+    return "Catty plan contains an unsafe command form.";
+  }
+  if (targetIdentities.some(identity => !identity || typeof identity.sessionId !== "string"
+    || typeof identity.hostId !== "string" || typeof identity.hostname !== "string" || typeof identity.protocol !== "string")) {
+    return "Catty plan target identities are incomplete.";
+  }
+  return null;
+}
+
+function prepareCattyPlan({ chatSessionId, planId, steps, targetIdentities } = {}) {
+  pruneCattyPlanAuthorizations();
+  const error = validateCattyPlanProposal({ chatSessionId, planId, steps, targetIdentities });
+  if (error) return { ok: false, error };
+  const token = crypto.randomBytes(32).toString("hex");
+  cattyPendingPlans.set(token, {
+    chatSessionId,
+    planId,
+    steps: steps.map(step => ({ ...step })),
+    targetIdentities: targetIdentities.map(identity => ({ ...identity })),
+    approved: false,
+    createdAt: Date.now(),
+  });
+  return { ok: true, proposalToken: token };
+}
+
+function approveCattyPlan({ chatSessionId, planId, proposalToken } = {}) {
+  const entry = cattyPendingPlans.get(proposalToken);
+  if (!entry || entry.chatSessionId !== chatSessionId || entry.planId !== planId) {
+    return { ok: false, error: "Catty plan proposal is missing or does not match this chat." };
+  }
+  entry.approved = true;
+  return { ok: true };
+}
+
+async function authorizeCattyPlan({ proposalToken } = {}) {
+  pruneCattyPlanAuthorizations();
+  const proposal = cattyPendingPlans.get(proposalToken);
+  if (!proposal || proposal.approved !== true) {
+    return { ok: false, error: "Catty plan has not been approved by the main-process plan registry." };
+  }
+  cattyPendingPlans.delete(proposalToken);
+  const { chatSessionId, planId, steps, targetIdentities } = proposal;
   const notesFingerprints = {};
   for (const step of steps) {
     if (step?.toolName !== "host_notes_set" && step?.toolName !== "vault_host_notes_set") continue;
@@ -109,8 +158,8 @@ async function authorizeCattyPlan({ chatSessionId, planId, steps, targetIdentiti
   cattyPlanAuthorizations.set(token, {
     chatSessionId,
     planId,
-    steps: steps.map(step => ({ ...step })),
-    targetIdentities: targetIdentities.map(identity => ({ ...identity })),
+    steps,
+    targetIdentities,
     notesFingerprints,
     nextStepIndex: 0,
     claimed: false,
@@ -122,6 +171,9 @@ async function authorizeCattyPlan({ chatSessionId, planId, steps, targetIdentiti
 function clearCattyPlanAuthorizations(chatSessionId) {
   for (const [token, entry] of cattyPlanAuthorizations) {
     if (entry.chatSessionId === chatSessionId) cattyPlanAuthorizations.delete(token);
+  }
+  for (const [token, entry] of cattyPendingPlans) {
+    if (entry.chatSessionId === chatSessionId) cattyPendingPlans.delete(token);
   }
 }
 
@@ -2649,6 +2701,8 @@ module.exports = {
   getPermissionGrants,
   setChatSessionCancelled,
   applyChatSessionCancelled,
+  prepareCattyPlan,
+  approveCattyPlan,
   authorizeCattyPlan,
   clearCattyPlanAuthorizations,
   validateCattyPlanStep,

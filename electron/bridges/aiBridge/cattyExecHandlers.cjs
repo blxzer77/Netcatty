@@ -102,6 +102,14 @@ async function proxyCattyExecToWorker({
 
 function registerCattyExecHandlers(ctx) {
   with (ctx) {
+  ipcMain.handle("netcatty:ai:prepare-plan", async (event, payload = {}) => {
+    if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    return mcpServerBridge.prepareCattyPlan(payload);
+  });
+  ipcMain.handle("netcatty:ai:approve-plan", async (event, payload = {}) => {
+    if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    return mcpServerBridge.approveCattyPlan(payload);
+  });
   ipcMain.handle("netcatty:ai:authorize-plan", async (event, payload = {}) => {
     if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
     return mcpServerBridge.authorizeCattyPlan(payload);

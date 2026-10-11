@@ -896,6 +896,15 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         })),
       ];
 
+      const proposal = await deps.bridge.aiPrepareCattyPlan?.({
+        chatSessionId,
+        planId: ctx.toolCallId,
+        steps,
+        targetIdentities,
+      });
+      if (!proposal?.ok || !proposal.proposalToken) {
+        return { error: proposal?.error || 'The main process could not register this plan proposal.' };
+      }
       const decision = await proposePlan({
         goal,
         steps,
@@ -928,13 +937,15 @@ async function executeLocalCattyCapability(ctx: LocalExecutionContext): Promise<
         };
       }
 
-      const authorization = await deps.bridge.aiAuthorizeCattyPlan?.({
+      const approval = await deps.bridge.aiApproveCattyPlan?.({
         chatSessionId,
         planId: ctx.toolCallId,
-        steps,
-        targetIdentities,
+        proposalToken: proposal.proposalToken,
       });
-      if (!authorization?.ok || !authorization.token
+      const authorization = approval?.ok
+        ? await deps.bridge.aiAuthorizeCattyPlan?.({ proposalToken: proposal.proposalToken })
+        : { ok: false, error: approval?.error };
+      if (!approval?.ok || !authorization?.ok || !authorization.token
         || !setApprovedPlanAuthorizationToken(chatSessionId, ctx.toolCallId, authorization.token)) {
         clearApprovedPlans(chatSessionId);
         return {

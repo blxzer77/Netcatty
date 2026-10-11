@@ -749,6 +749,8 @@ describe('capabilityTools submit_plan', () => {
     createCattyToolsFromCatalog(
       {
         aiCapability: async () => ({ ok: true }),
+        aiPrepareCattyPlan: async () => ({ ok: true, proposalToken: 'test-proposal-token' }),
+        aiApproveCattyPlan: async () => ({ ok: true }),
         aiAuthorizeCattyPlan: async () => ({ ok: true, token: 'test-plan-token' }),
       },
       { sessions: [

@@ -1855,6 +1855,12 @@ function createPreloadApi(ctx) {
   aiAllowlistAddHost: async (baseURL) => {
     return ipcRenderer.invoke("netcatty:ai:allowlist:add-host", { baseURL });
   },
+  aiPrepareCattyPlan: async (payload) => {
+    return ipcRenderer.invoke("netcatty:ai:prepare-plan", payload);
+  },
+  aiApproveCattyPlan: async (payload) => {
+    return ipcRenderer.invoke("netcatty:ai:approve-plan", payload);
+  },
   aiAuthorizeCattyPlan: async (payload) => {
     return ipcRenderer.invoke("netcatty:ai:authorize-plan", payload);
   },
