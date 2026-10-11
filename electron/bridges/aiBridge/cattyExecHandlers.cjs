@@ -104,10 +104,16 @@ function registerCattyExecHandlers(ctx) {
   with (ctx) {
   ipcMain.handle("netcatty:ai:prepare-plan", async (event, payload = {}) => {
     if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, payload.chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     return mcpServerBridge.prepareCattyPlan({ ...payload, webContentsId: event.sender.id });
   });
   ipcMain.handle("netcatty:ai:approve-plan", async (event, payload = {}) => {
     if (!validateSender(event)) return { ok: false, error: "Unauthorized IPC sender" };
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, payload.chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     return mcpServerBridge.approveCattyPlan({ ...payload, webContentsId: event.sender.id });
   });
   ipcMain.handle("netcatty:ai:authorize-plan", async (event, payload = {}) => {
@@ -121,6 +127,9 @@ function registerCattyExecHandlers(ctx) {
     // Validate IPC sender (Issue #17)
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
+    }
+    if (chatSessionId && !mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
     }
     // Block execution in observer mode (Issue #11)
     if (mcpServerBridge.getPermissionMode() === "observer") {
@@ -349,6 +358,9 @@ function registerCattyExecHandlers(ctx) {
     if (!validateSender(event)) {
       return { ok: false, error: "Unauthorized IPC sender" };
     }
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     mcpServerBridge.cancelPtyExecsForSession(chatSessionId);
     void mcpServerBridge.cancelSftpOpsForSession?.(chatSessionId);
     if (typeof mcpServerBridge.cancelWorkerBackgroundJobsForSession === "function") {
@@ -372,6 +384,9 @@ function registerCattyExecHandlers(ctx) {
     if (!chatSessionId || typeof chatSessionId !== "string") {
       return { ok: false, error: "chatSessionId is required" };
     }
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
+    }
     try {
       return await mcpServerBridge.applyChatSessionCancelled(chatSessionId, cancelled !== false);
     } catch (err) {
@@ -385,6 +400,9 @@ function registerCattyExecHandlers(ctx) {
     }
     if (!rpcMethod || typeof rpcMethod !== "string") {
       return { ok: false, error: "rpcMethod is required" };
+    }
+    if (!mcpServerBridge.isCattyWebContentsChatBound(event.sender.id, chatSessionId)) {
+      return { ok: false, error: "Catty chat scope is not bound to this renderer." };
     }
     return mcpServerBridge.dispatchBuiltinRpc(rpcMethod, {
       ...(params || {}),

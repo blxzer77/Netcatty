@@ -39,6 +39,9 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
       return { ok: true, targetIdentity: { hostId: "host-1", hostname: "host.example", protocol: "ssh" } };
     },
     settleCattyPlanStep() {},
+    isCattyWebContentsChatBound() {
+      return true;
+    },
     checkCommandSafetyForShell() {
       return { blocked: false };
     },

@@ -134,15 +134,6 @@ export const PlanApprovalCard: React.FC<{
 const PLAN_ARG_SENSITIVE_KEY = /(?:password|passphrase|private.?key|secret|token|authorization|credential|content|notes)/i;
 const MAX_PLAN_ARGS_PREVIEW_CHARS = 8_000;
 
-function fingerprint(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 function formatPlanText(value: string | undefined): string {
   if (!value) return '';
   const redacted = redactSecretsForModel(value)
@@ -152,8 +143,7 @@ function formatPlanText(value: string | undefined): string {
 
 function redactPlanPreview(value: unknown, key?: string): unknown {
   if (key && PLAN_ARG_SENSITIVE_KEY.test(key)) {
-    const serialized = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
-    return `[redacted length=${serialized.length} fingerprint=${fingerprint(serialized)}]`;
+    return '[redacted]';
   }
   if (Array.isArray(value)) return value.map(entry => redactPlanPreview(entry));
   if (value && typeof value === 'object') {

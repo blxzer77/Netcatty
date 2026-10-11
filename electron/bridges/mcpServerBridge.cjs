@@ -61,6 +61,7 @@ const DISCOVERY_SELF_HEAL_INTERVAL_MS = 15000;
 
 const cattyPlanAuthorizations = new Map();
 const cattyPendingPlans = new Map();
+const cattyWebContentsChatScopes = new Map();
 const CATTY_PLAN_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
 const CATTY_WRITE_TOOLS = new Set([
   "terminal_execute", "terminal_start", "terminal_stop", "terminal_batch",
@@ -73,6 +74,23 @@ function canonicalCattyValue(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalCattyValue).join(",")}]`;
   return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalCattyValue(value[key])}`).join(",")}}`;
+}
+
+function bindCattyWebContentsChat(webContentsId, chatSessionId) {
+  if (!Number.isInteger(webContentsId) || typeof chatSessionId !== "string" || !chatSessionId) return false;
+  let scopes = cattyWebContentsChatScopes.get(webContentsId);
+  if (!scopes) {
+    scopes = new Set();
+    cattyWebContentsChatScopes.set(webContentsId, scopes);
+  }
+  scopes.add(chatSessionId);
+  return true;
+}
+
+function isCattyWebContentsChatBound(webContentsId, chatSessionId) {
+  return Number.isInteger(webContentsId)
+    && typeof chatSessionId === "string"
+    && cattyWebContentsChatScopes.get(webContentsId)?.has(chatSessionId) === true;
 }
 
 function pruneCattyPlanAuthorizations() {
@@ -183,7 +201,8 @@ async function authorizeCattyPlan({ proposalToken, webContentsId } = {}) {
   pruneCattyPlanAuthorizations();
   const proposal = cattyPendingPlans.get(proposalToken);
   if (!proposal || proposal.approved !== true
-    || (proposal.webContentsId !== null && proposal.webContentsId !== webContentsId)) {
+    || (proposal.webContentsId !== null && proposal.webContentsId !== webContentsId)
+    || !isCattyWebContentsChatBound(webContentsId, proposal?.chatSessionId)) {
     return { ok: false, error: "Catty plan has not been approved by the main-process plan registry." };
   }
   cattyPendingPlans.delete(proposalToken);
@@ -2752,6 +2771,8 @@ module.exports = {
   approveCattyPlan,
   authorizeCattyPlan,
   clearCattyPlanAuthorizations,
+  bindCattyWebContentsChat,
+  isCattyWebContentsChatBound,
   validateCattyPlanStep,
   settleCattyPlanStep,
   checkCommandSafetyForShell,
