@@ -2,9 +2,13 @@ name: test
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches:
+      # `main` is upstream's branch; `catty-main` is this fork's default branch.
+      # Without the fork branch these workflows never ran here at all.
       - main
+      - catty-main
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
