@@ -57,7 +57,13 @@ jobs:
   # ------------------------------------------------------------------
   build-linux-x64:
     name: build-linux-x64
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    # Linux/x64 jobs run on the self-hosted nyan-dev-01 runner. A pull request
+    # whose code comes from another repository falls back to a GitHub-hosted
+    # runner: the self-hosted runner users hold NOPASSWD sudo and the docker
+    # group, so untrusted fork code must not execute there. Compare repository
+    # names rather than head.repo.fork, which is true for every PR while this
+    # repository is itself a fork of an upstream project.
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     steps:
       - uses: actions/checkout@v7
       - name: Restore cached PR build
@@ -267,7 +273,7 @@ jobs:
       - build-linux-arm64
       - build-macos-universal
       - build-windows-x64
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
     permissions:
       contents: read

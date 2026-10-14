@@ -120,7 +120,13 @@ jobs:
         (startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)))
         || (github.event_name == 'workflow_dispatch' && inputs.mosh_bin_release != '')
       )
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    # Linux/x64 jobs run on the self-hosted nyan-dev-01 runner. A pull request
+    # whose code comes from another repository falls back to a GitHub-hosted
+    # runner: the self-hosted runner users hold NOPASSWD sudo and the docker
+    # group, so untrusted fork code must not execute there. Compare repository
+    # names rather than head.repo.fork, which is true for every PR while this
+    # repository is itself a fork of an upstream project.
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     outputs:
       mosh_bin_release: ${{ steps.resolve.outputs.mosh_bin_release }}
     steps:
@@ -147,7 +153,7 @@ jobs:
         (startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)))
         || (github.event_name == 'workflow_dispatch' && inputs.et_bin_release != '')
       )
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     outputs:
       et_bin_release: ${{ steps.resolve.outputs.et_bin_release }}
     steps:
@@ -369,7 +375,7 @@ jobs:
       always()
       && (needs.resolve-mosh.result == 'success' || needs.resolve-mosh.result == 'skipped')
       && (needs.resolve-et.result == 'success' || needs.resolve-et.result == 'skipped')
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     container:
       # The GitHub runner already retries container pulls three times. Use the
       # official Quay mirror to avoid the Docker Hub endpoint that repeatedly
@@ -783,7 +789,7 @@ jobs:
 
   release:
     name: release
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     needs: [build, build-linux-x64, build-linux-arm64]
     # Only release on a strict v<MAJOR>.<MINOR>.<PATCH>[-pre] tag.
     # Manual workflow_dispatch can publish only when it is run from one
@@ -891,7 +897,7 @@ jobs:
 
   update-nix-release:
     name: update Nix release metadata
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     needs: release
     if: |
       startsWith(github.ref, 'refs/tags/v')
@@ -1052,7 +1058,7 @@ jobs:
 
   homebrew-tap:
     name: bump homebrew tap
-    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') }}
     needs: release
     # Do not use one global Actions concurrency group here: it keeps only one
     # pending job. The bump script serializes pushes with compare-and-retry and
