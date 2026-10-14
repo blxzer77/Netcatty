@@ -81,7 +81,7 @@ env:
 jobs:
   route:
     name: Route event
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     permissions:
       contents: read
       issues: read
@@ -372,7 +372,7 @@ jobs:
     name: Hand reopened issue to maintainers
     needs: route
     if: needs.route.outputs.kind == 'ready_for_human_handoff'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     concurrency:
       group: ai-source-issue-${{ needs.route.outputs.issue_number || github.run_id }}
       cancel-in-progress: false
@@ -410,7 +410,7 @@ jobs:
     name: Clean source issue state
     needs: route
     if: needs.route.outputs.kind == 'source_issue_cleanup'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     concurrency:
       group: ai-source-issue-${{ needs.route.outputs.issue_number || github.run_id }}
       cancel-in-progress: false
@@ -502,7 +502,7 @@ jobs:
   reconcile_closed_handoffs:
     name: Reconcile handoffs
     if: github.event_name == 'schedule' && github.event.schedule == '17 3 * * *'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     permissions:
       actions: write
       contents: read
@@ -633,7 +633,7 @@ jobs:
     name: Classify issue
     needs: route
     if: needs.route.outputs.kind == 'issue_classify'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 30
     # Per-issue only: a global group drops pending issues (GitHub keeps one
     # pending job). Same-issue retriages still serialize; daily limit is
@@ -1190,7 +1190,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.sandbox_smoke == true) ||
       (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -1352,7 +1352,7 @@ jobs:
     name: Review issue follow-up
     needs: route
     if: needs.route.outputs.kind == 'issue_followup'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 120
     concurrency:
       group: ai-source-issue-${{ needs.route.outputs.issue_number || github.run_id }}
@@ -2449,7 +2449,7 @@ jobs:
     name: Publish issue follow-up
     needs: issue_followup
     if: needs.issue_followup.outputs.should_publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 20
     permissions:
       contents: write
@@ -2913,7 +2913,7 @@ jobs:
       needs.classify.result == 'success' &&
       needs.classify.outputs.should_run == 'true' &&
       needs.classify.outputs.should_implement == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 120
     # Agent job: no contents write token available to the runner for publish.
     permissions:
@@ -3399,7 +3399,7 @@ jobs:
     name: Publish implement PR
     needs: [implement]
     if: needs.implement.outputs.should_publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 20
     outputs:
       pull_number: ${{ steps.openpr.outputs.pull_number }}
@@ -3745,7 +3745,7 @@ jobs:
       needs.classify.result == 'success' &&
       needs.classify.outputs.has_backlog == 'true' &&
       (needs.implement.result == 'success' || needs.implement.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 10
     permissions:
       actions: write
@@ -3838,7 +3838,7 @@ jobs:
     name: Codex review loop
     needs: route
     if: needs.route.outputs.kind == 'codex_loop'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 120
     concurrency:
       group: ai-codex-head-${{ needs.route.outputs.head_ref || needs.route.outputs.pull_number || github.run_id }}
@@ -4867,7 +4867,7 @@ jobs:
     name: Publish Codex fix
     needs: [codex_loop]
     if: needs.codex_loop.outputs.should_publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 20
     concurrency:
       group: ai-codex-head-${{ needs.codex_loop.outputs.head_ref || github.run_id }}
@@ -4974,7 +4974,7 @@ jobs:
     # The marker is retained while every queued/fix/publish job is active, then
     # cleared only after this dispatched workflow has reached its terminal state.
     if: always() && github.event_name == 'workflow_dispatch' && inputs.codex_review_id != '' && inputs.codex_head_sha != '' && inputs.codex_dispatch_id != ''
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     permissions:
       issues: write
     env:
@@ -5015,7 +5015,7 @@ jobs:
     name: Own PR re-request Codex
     needs: route
     if: needs.route.outputs.kind == 'own_rerequest_codex'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 10
     concurrency:
       group: ai-codex-head-${{ needs.route.outputs.head_ref || needs.route.outputs.pull_number || github.run_id }}
@@ -5170,7 +5170,7 @@ jobs:
     name: External PR re-request Codex
     needs: route
     if: needs.route.outputs.kind == 'external_rerequest_codex'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 10
     # Write comments only; never checkout untrusted PR code.
     permissions:
@@ -5268,7 +5268,7 @@ jobs:
     name: Poll Codex reaction / retry
     needs: route
     if: needs.route.outputs.kind == 'codex_poll'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     timeout-minutes: 20
     permissions:
       contents: read

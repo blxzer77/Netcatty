@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     steps:
       - name: Checkout
         uses: actions/checkout@v7

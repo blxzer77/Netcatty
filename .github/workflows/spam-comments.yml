@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   delete-spam:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     steps:
       - name: Checkout filter rules
         uses: actions/checkout@v7

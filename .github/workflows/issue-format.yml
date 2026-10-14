@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, repo-Netcatty]
     # Skip issues opened by bots (e.g. dependabot) and maintainers fixing format
     if: >-
       github.event.issue.user.type != 'Bot' &&
