@@ -27,7 +27,7 @@ on:
         default: "binaricat/Netcatty-et-bin"
   push:
     branches:
-      - main
+      - catty-main
     paths:
       - ".github/workflows/build-et-binaries.yml"
       - "electron-builder.config.cjs"

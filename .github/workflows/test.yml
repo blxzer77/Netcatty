@@ -1,13 +1,13 @@
 name: test
 
-# `main` is upstream's branch; `catty-main` is this fork's default branch. Without the
-# fork branch these workflows never ran here at all (0 runs before 2026-10-14).
+# This is a fork: its default branch is `catty-main`. Upstream's `main` does not exist
+# here, so subscribing to it was a dead condition and these workflows never ran at all
+# (0 runs before 2026-10-14).
 on:
   pull_request:
   workflow_dispatch:
   push:
     branches:
-      - main
       - catty-main
 
 concurrency:

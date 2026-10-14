@@ -70,7 +70,7 @@ const triggersPackageValidation = (filePath) => {
 };
 
 test("PR validation runs once per commit and includes a production build", () => {
-  assert.match(testWorkflow, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- catty-main/);
+  assert.match(testWorkflow, /push:\s*\n\s*branches:\s*\n\s*- catty-main/);
   assert.doesNotMatch(testWorkflow, /branches:\s*\n\s*- "\*\*"/);
   assert.match(
     testWorkflow,
@@ -107,7 +107,7 @@ test("manual package validations do not share push concurrency", () => {
 });
 
 test("package validation avoids duplicate branch runs and scopes PR builds", () => {
-  assert.match(buildWorkflow, /push:\s*\n\s*branches:\s*\n\s*- main/);
+  assert.match(buildWorkflow, /push:\s*\n\s*branches:\s*\n\s*- catty-main/);
   assert.doesNotMatch(buildWorkflow, /branches:\s*\n\s*- "\*\*"/);
   assert.match(buildWorkflow, /pull_request:\s*\n\s*paths:/);
   assert.doesNotMatch(buildWorkflow, /\n  dedupe:/);
@@ -393,7 +393,7 @@ test("permission handoffs use the established ready-for-human label", () => {
 });
 
 test("ET binary validation runs once and retries transient container pulls", () => {
-  assert.match(etWorkflow, /push:\s*\n\s*branches:\s*\n\s*- main/);
+  assert.match(etWorkflow, /push:\s*\n\s*branches:\s*\n\s*- catty-main/);
   assert.doesNotMatch(etWorkflow, /branches:\s*\n\s*- "\*\*"/);
   assert.match(etWorkflow, /Pull build container with retry/g);
   assert.match(etWorkflow, /docker pull/);
