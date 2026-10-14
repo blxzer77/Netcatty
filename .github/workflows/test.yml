@@ -1,12 +1,12 @@
 name: test
 
+# `main` is upstream's branch; `catty-main` is this fork's default branch. Without the
+# fork branch these workflows never ran here at all (0 runs before 2026-10-14).
 on:
   pull_request:
   workflow_dispatch:
   push:
     branches:
-      # `main` is upstream's branch; `catty-main` is this fork's default branch.
-      # Without the fork branch these workflows never ran here at all.
       - main
       - catty-main
 

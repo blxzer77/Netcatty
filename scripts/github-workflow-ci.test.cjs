@@ -70,9 +70,12 @@ const triggersPackageValidation = (filePath) => {
 };
 
 test("PR validation runs once per commit and includes a production build", () => {
-  assert.match(testWorkflow, /push:\s*\n\s*branches:\s*\n\s*- main/);
+  assert.match(testWorkflow, /push:\s*\n\s*branches:\s*\n\s*- main\s*\n\s*- catty-main/);
   assert.doesNotMatch(testWorkflow, /branches:\s*\n\s*- "\*\*"/);
-  assert.match(testWorkflow, /name: lint-and-test\s*\n\s*runs-on: ubuntu-latest\s*\n\s*timeout-minutes: 20/);
+  assert.match(
+    testWorkflow,
+    /name: lint-and-test\s*\n\s*runs-on: \[self-hosted, Linux, X64, repo-Netcatty\]\s*\n\s*timeout-minutes: 20/,
+  );
   assert.match(testWorkflow, /sudo apt-get install -y fish xvfb/);
   assert.match(
     testWorkflow,
