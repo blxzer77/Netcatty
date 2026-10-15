@@ -10,6 +10,16 @@
 # users hold NOPASSWD sudo and the docker group), so they are skipped with a
 # note instead — same trust split as ci.yml.
 #
+# Review effort is "medium". Measured on a 6-file diff against effort=low:
+# 14 findings vs 8, at ~2.6x the tokens and ~30 minutes instead of ~7. The extra
+# findings included a real user-visible regression that low missed. Every timeout
+# below is sized for that worst case: workflow 50 min, dispatch 40 min,
+# nginx 2500s. A medium run that exceeds them loses the whole review.
+#
+# OCR reports status=partial when some files could not be reviewed; the rendered
+# comment then carries a warning naming them, so a partial run is never mistaken
+# for a clean one.
+#
 # Secrets needed (repo Settings -> Secrets and variables -> Actions):
 #   OCR_DISPATCH_URL    default http://100.80.19.12:50007/ocr  (tailnet + nginx)
 #   OCR_DISPATCH_TOKEN  must equal /etc/ocr-dispatch.token on dev-02
@@ -37,7 +47,7 @@ jobs:
     # Compare repository full names rather than head.repo.fork: this repository
     # is itself a fork, so `fork` is true for every PR. Mirrors ci.yml.
     runs-on: ${{ (github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","Linux","X64","repo-Netcatty"]') || 'ubuntu-latest' }}
-    timeout-minutes: 25
+    timeout-minutes: 50
     steps:
       - name: Guard — fork PRs cannot reach the dispatch service
         id: guard
@@ -90,7 +100,7 @@ jobs:
               "base_sha": os.environ["BASE"],
               "diff": diff,
               "model": "deepseek-flash",
-              "effort": "low",
+              "effort": "medium",
           }).encode()
           req = urllib.request.Request(
               os.environ["URL"].rstrip('/') + '/review',
@@ -101,7 +111,7 @@ jobs:
               },
               method='POST')
           try:
-              with urllib.request.urlopen(req, timeout=700) as resp:
+              with urllib.request.urlopen(req, timeout=2600) as resp:
                   data = json.load(resp)
           except urllib.error.HTTPError as exc:
               data = {"ok": False, "error": "HTTP %s: %s" % (exc.code, exc.read(200)[:200])}
