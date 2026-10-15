@@ -60,14 +60,16 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          DIFF="$RUNNER_TEMP/pr.diff"
           git fetch --no-tags --quiet origin "$BASE" "$HEAD"
-          # Three-dot (merge-base) is what GitHub shows in "Files changed".
-          if ! git diff "$BASE"...'$HEAD' > /tmp/pr.diff 2>/dev/null; then
-            git diff "$BASE" "$HEAD" > /tmp/pr.diff
+          # Three-dot (merge-base) matches what GitHub shows in "Files changed".
+          # `set -e` is deliberately off here: the two-dot fallback is the point.
+          if ! git diff "$BASE"..."$HEAD" > "$DIFF" 2>/dev/null; then
+            git diff "$BASE" "$HEAD" > "$DIFF"
           fi
-          echo "lines=$(wc -l < /tmp/pr.diff)" >> "$GITHUB_OUTPUT"
-          [ -s /tmp/pr.diff ] || echo "empty=true" >> "$GITHUB_OUTPUT"
+          echo "lines=$(wc -l < "$DIFF")" >> "$GITHUB_OUTPUT"
+          [ -s "$DIFF" ] || echo "empty=true" >> "$GITHUB_OUTPUT"
 
       - name: Request review from ocr-dispatch
         if: steps.guard.outputs.skip != 'true' && steps.diff.outputs.empty != 'true'
@@ -81,7 +83,7 @@ jobs:
           python3 - <<'PY'
           import json, os, urllib.error, urllib.request
 
-          diff = open('/tmp/pr.diff', encoding='utf-8').read()
+          diff = open(os.path.join(os.environ["RUNNER_TEMP"], "pr.diff"), encoding='utf-8').read()
           payload = json.dumps({
               "repo": os.environ["REPO"],
               "sha": os.environ["SHA"],
@@ -112,7 +114,7 @@ jobs:
               body = ("<!-- ocr-review -->\n\n> ⚠️ OCR review 未能完成：%s\n"
                       "\n<sub>可重跑本 workflow，或检查 dev-02 的 `ocr-dispatch`。</sub>\n"
                       % data.get("error", "unknown"))
-          open('/tmp/ocr_comment.md', 'w', encoding='utf-8').write(body)
+          open(os.path.join(os.environ["RUNNER_TEMP"], "ocr_comment.md"), 'w', encoding='utf-8').write(body)
           print("dispatch ok=%s error=%s" % (data.get("ok"), data.get("error")))
           PY
 
@@ -123,7 +125,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- ocr-review -->';
-            const body = fs.readFileSync('/tmp/ocr_comment.md', 'utf8');
+            const path = require('path');
+            const body = fs.readFileSync(
+              path.join(process.env.RUNNER_TEMP, 'ocr_comment.md'), 'utf8');
             if (!body.includes(marker)) {
               core.warning('rendered comment lacks the marker; refusing to post');
               return;
