@@ -70,13 +70,22 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          # `set -e` stays off: the two-dot fallback below is deliberate. That means
+          # every command whose failure should abort the step has to be checked by
+          # hand — otherwise a failed fetch leaves an empty diff, the review steps
+          # are skipped as "nothing to review", and the job still reports success.
           set -uo pipefail
           DIFF="$RUNNER_TEMP/pr.diff"
-          git fetch --no-tags --quiet origin "$BASE" "$HEAD"
+          if ! git fetch --no-tags --quiet origin "$BASE" "$HEAD"; then
+            echo "::error::git fetch failed for $BASE / $HEAD"
+            exit 1
+          fi
           # Three-dot (merge-base) matches what GitHub shows in "Files changed".
-          # `set -e` is deliberately off here: the two-dot fallback is the point.
           if ! git diff "$BASE"..."$HEAD" > "$DIFF" 2>/dev/null; then
-            git diff "$BASE" "$HEAD" > "$DIFF"
+            if ! git diff "$BASE" "$HEAD" > "$DIFF"; then
+              echo "::error::could not diff $BASE against $HEAD"
+              exit 1
+            fi
           fi
           echo "lines=$(wc -l < "$DIFF")" >> "$GITHUB_OUTPUT"
           [ -s "$DIFF" ] || echo "empty=true" >> "$GITHUB_OUTPUT"
